@@ -1,0 +1,39 @@
+<div class="pos-wrapper">
+    <div class="pos-body">
+        <div class="scanner-container">
+            <div class="input-group">
+                <input type="text" id="barcode-scan" placeholder="Scan Barcode or Search Items..." autofocus>
+            </div>
+        </div>
+        
+        <div id="product-grid" class="product-grid">
+            <div class="pos-loading-state">Loading products...</div>
+        </div>
+    </div>
+
+    <div class="pos-sidebar">
+        <div class="customer-section">
+            <label class="customer-label">CUSTOMER</label>
+            <div id="customer-search-container"></div> 
+        </div>
+
+        <div class="cart-header">
+            <h3>Current Sale</h3>
+            <span class="item-count-badge" id="cart-count">0 Items</span>
+        </div>
+        
+        <div id="cart-table" class="cart-items">
+            <div class="empty-cart-msg">No items in cart</div>
+        </div>
+
+        <div class="cart-footer">
+            <div class="total-display">
+                <span class="total-label">TOTAL</span>
+                <span class="total-amount">
+                    <small>₱</small><span id="grand-total">0.00</span>
+                </span>
+            </div>
+            <button id="checkout-btn" class="btn-checkout">PROCEED TO CHECKOUT</button>
+        </div>
+    </div>
+</div>

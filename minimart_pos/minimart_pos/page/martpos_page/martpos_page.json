@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-02-16 16:01:50.946010",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-02-16 16:02:09.070193",
+ "modified_by": "Administrator",
+ "module": "Minimart Pos",
+ "name": "martpos_page",
+ "owner": "Administrator",
+ "page_name": "martpos_page",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Mart POS"
+}
