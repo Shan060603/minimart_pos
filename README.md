@@ -23,6 +23,6 @@ bench get-app https://github.com/Shan060603/minimart_pos.git
 # 2. Install it on your site
 bench --site [your-site-name] install-app minimart_pos
 
-# 3. Build assets and restart
-bench build --app minimart_pos
-bench restart
+# 3. Migrate and Build:
+bench migrate
+bench build
