@@ -104,7 +104,7 @@ class MiniMartPOS {
         });
 
         $(document).on('click', (e) => {
-            if (!$(e.target).closest('#barcode-scan, #customer-search-container, .awesomplete, .modal-dialog').length) {
+            if (!$(e.target).closest('#barcode-scan, #customer-search-container, .awesomplete, .modal-dialog, .cart-qty-input').length) {
                 setTimeout(() => this.focus_input(), 1000);
             }
         });
@@ -171,15 +171,56 @@ class MiniMartPOS {
         this.render_cart();
     }
 
+    update_qty(index, delta) {
+        let item = this.cart[index];
+        item.qty = flt(item.qty) + delta;
+
+        if (item.qty <= 0) {
+            this.remove_item(index);
+        } else {
+            this.render_cart();
+        }
+    }
+
+    // --- NEW: Handle manual decimal input ---
+    manual_qty_update(index, value) {
+        let val = flt(value);
+        if (val <= 0) {
+            this.remove_item(index);
+        } else {
+            this.cart[index].qty = val;
+            this.update_total();
+            
+            // Update row total display without full re-render
+            let row_total = (this.cart[index].qty * this.cart[index].price).toFixed(2);
+            $(`.cart-row[data-index="${index}"] .item-total`).text(`₱${row_total}`);
+        }
+    }
+
     render_cart() {
         let html = this.cart.map((item, index) => `
-            <div class="cart-row">
-                <div class="item-meta">
+            <div class="cart-row" data-index="${index}" style="display: flex; align-items: center; justify-content: space-between; padding: 10px; border-bottom: 1px solid #f0f0f0;">
+                <div class="item-meta" style="flex: 1;">
                     <strong>${item.item_name || item.item_code}</strong><br>
-                    <small>${item.qty} x ₱${item.price.toFixed(2)}</small>
+                    <small>₱${item.price.toFixed(2)}</small>
                 </div>
-                <div class="item-total">₱${(item.qty * item.price).toFixed(2)}</div>
-                <button onclick="pos_instance.remove_item(${index})" class="btn-remove">×</button>
+                
+                <div class="qty-controls" style="display: flex; align-items: center; gap: 5px; margin: 0 15px;">
+                    <button onclick="pos_instance.update_qty(${index}, -1)" class="btn btn-xs btn-default" style="font-weight: bold;">-</button>
+                    
+                    <input type="number" step="any" class="form-control cart-qty-input" 
+                        value="${item.qty}" 
+                        style="width: 65px; text-align: center; height: 28px; padding: 2px; font-size: 13px;"
+                        onchange="pos_instance.manual_qty_update(${index}, this.value)">
+                    
+                    <button onclick="pos_instance.update_qty(${index}, 1)" class="btn btn-xs btn-default" style="font-weight: bold;">+</button>
+                </div>
+
+                <div class="item-total" style="font-weight: bold; min-width: 80px; text-align: right;">
+                    ₱${(item.qty * item.price).toFixed(2)}
+                </div>
+                
+                <button onclick="pos_instance.remove_item(${index})" class="btn-remove" style="background: none; border: none; color: #ff5858; margin-left: 10px; cursor: pointer; font-size: 18px;">×</button>
             </div>
         `).join('');
 
@@ -270,7 +311,7 @@ class MiniMartPOS {
                         cart: JSON.stringify(me.cart),
                         customer: customer,
                         mode_of_payment: values.mode_of_payment,
-                        amount_paid: values.amount_received // FIX: Pass actual received amount
+                        amount_paid: values.amount_received
                     },
                     freeze: true,
                     callback: (r) => {
@@ -287,7 +328,6 @@ class MiniMartPOS {
 
         d.show();
 
-        // Highlight input for fast typing
         setTimeout(() => {
             d.get_field('amount_received').$input.select();
         }, 400);
