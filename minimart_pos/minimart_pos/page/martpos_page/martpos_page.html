@@ -33,6 +33,18 @@
             <div class="empty-cart-msg">No items in cart</div>
         </div>
 
+        <div class="recent-orders-wrapper">
+            <div class="recent-orders-header d-flex justify-content-between align-items-center">
+                <span>Recent Orders</span>
+                <button class="btn btn-xs btn-link p-0" onclick="pos_instance.load_recent_orders()">
+                    <i class="fa fa-refresh"></i>
+                </button>
+            </div>
+            <div id="recent-orders-list" class="recent-orders-list">
+                <div class="text-center p-2 text-muted" style="font-size: 11px;">No orders in this shift</div>
+            </div>
+        </div>
+
         <div class="cart-footer">
             <div class="total-display">
                 <span class="total-label">TOTAL</span>

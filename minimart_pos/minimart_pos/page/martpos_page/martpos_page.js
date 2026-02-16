@@ -51,16 +51,19 @@ class MiniMartPOS {
         this.last_transaction = null; 
         this.customer_control = null;
         
+        // Selectors
         this.$scan_input = $('#barcode-scan');
         this.$cart_container = $('#cart-table');
         this.$total_display = $('#grand-total');
         this.$product_grid = $('#product-grid');
+        this.$recent_orders_list = $('#recent-orders-list');
     }
 
     init() {
         this.setup_customer_control();
         this.bind_events();
         this.load_products();
+        this.load_recent_orders();
         this.focus_input();
     }
 
@@ -95,7 +98,7 @@ class MiniMartPOS {
     }
 
     bind_events() {
-        // Handle Enter key for Barcodes
+        // Barcode Scan / Search Enter
         this.$scan_input.on('keypress', (e) => {
             if (e.which == 13) {
                 let code = this.$scan_input.val().trim();
@@ -104,12 +107,13 @@ class MiniMartPOS {
             }
         });
 
-        // NEW: Real-time filtering as you type
+        // Real-time grid filtering
         this.$scan_input.on('input', (e) => {
             let keyword = $(e.currentTarget).val().toLowerCase();
             this.filter_products(keyword);
         });
 
+        // Refocus logic for scanners
         $(document).on('click', (e) => {
             if (!$(e.target).closest('#barcode-scan, #customer-search-container, .awesomplete, .modal-dialog, .cart-qty-input').length) {
                 setTimeout(() => this.focus_input(), 1000);
@@ -118,6 +122,8 @@ class MiniMartPOS {
 
         $(document).on('click', '#checkout-btn', () => this.process_payment());
     }
+
+    // --- Product Grid Logic ---
 
     load_products() {
         frappe.call({
@@ -146,11 +152,10 @@ class MiniMartPOS {
         this.$product_grid.html(html);
     }
 
-    // NEW: Logic to hide/show cards based on search
     filter_products(keyword) {
         this.$product_grid.find('.product-card').each(function() {
-            let name = $(this).data('item-name');
-            let code = $(this).data('item-code');
+            let name = $(this).data('item-name') || "";
+            let code = $(this).data('item-code') || "";
             
             if (name.includes(keyword) || code.includes(keyword)) {
                 $(this).show();
@@ -158,14 +163,6 @@ class MiniMartPOS {
                 $(this).hide();
             }
         });
-
-        if (this.$product_grid.find('.product-card:visible').length === 0) {
-            if (!$('.no-search-results').length) {
-                this.$product_grid.append('<div class="no-search-results p-5 text-center text-muted">No matching items found</div>');
-            }
-        } else {
-            $('.no-search-results').remove();
-        }
     }
 
     fetch_item(barcode) {
@@ -176,6 +173,11 @@ class MiniMartPOS {
                 if (r.message) {
                     this.add_to_cart(r.message);
                     frappe.utils.play_sound("submit");
+                    
+                    // Reset grid so items don't disappear after scan
+                    this.$scan_input.val(''); 
+                    this.filter_products(''); 
+                    
                 } else {
                     frappe.show_alert({message: __('Item not found'), indicator: 'red'});
                     frappe.utils.play_sound("error");
@@ -184,6 +186,8 @@ class MiniMartPOS {
             }
         });
     }
+
+    // --- Cart Logic ---
 
     add_to_cart(item) {
         let existing = this.cart.find(i => i.item_code === item.item_code);
@@ -203,7 +207,6 @@ class MiniMartPOS {
     update_qty(index, delta) {
         let item = this.cart[index];
         item.qty = flt(item.qty) + delta;
-
         if (item.qty <= 0) {
             this.remove_item(index);
         } else {
@@ -230,7 +233,6 @@ class MiniMartPOS {
                     <div class="item-name">${item.item_name || item.item_code}</div>
                     <div class="item-price">₱${item.price.toFixed(2)}</div>
                 </div>
-                
                 <div class="qty-controls">
                     <button onclick="pos_instance.update_qty(${index}, -1)" class="btn-qty">-</button>
                     <input type="number" step="any" class="cart-qty-input" 
@@ -238,11 +240,9 @@ class MiniMartPOS {
                         onchange="pos_instance.manual_qty_update(${index}, this.value)">
                     <button onclick="pos_instance.update_qty(${index}, 1)" class="btn-qty">+</button>
                 </div>
-
                 <div class="item-total">
                     ₱<span class="item-total-val">${(item.qty * item.price).toFixed(2)}</span>
                 </div>
-                
                 <button onclick="pos_instance.remove_item(${index})" class="btn-remove">×</button>
             </div>
         `).join('');
@@ -266,6 +266,61 @@ class MiniMartPOS {
         let total = this.cart.reduce((sum, i) => sum + (i.qty * i.price), 0);
         this.$total_display.text(total.toFixed(2));
     }
+
+    // --- History / Recent Orders ---
+
+    load_recent_orders() {
+        let me = this;
+        frappe.call({
+            method: "minimart_pos.api.get_recent_invoices", 
+            args: {
+                opening_entry: this.shift_data.opening_entry
+            },
+            callback: (r) => {
+                if (r.message) {
+                    me.render_recent_orders(r.message);
+                }
+            }
+        });
+    }
+
+    render_recent_orders(orders) {
+        if (!orders.length) {
+            this.$recent_orders_list.html('<div class="text-center p-2 text-muted" style="font-size: 11px;">No orders yet</div>');
+            return;
+        }
+
+        let html = orders.map(order => `
+            <div class="recent-order-item" style="cursor: pointer;" onclick="pos_instance.view_past_order('${order.name}')">
+                <div class="d-flex justify-content-between">
+                    <span class="order-id">#${order.name.split('-').pop()}</span>
+                    <span class="order-total">₱${flt(order.grand_total).toFixed(2)}</span>
+                </div>
+                <div class="order-customer text-muted">${order.customer}</div>
+            </div>
+        `).join('');
+        this.$recent_orders_list.html(html);
+    }
+
+    view_past_order(invoice_name) {
+        if (!invoice_name) return;
+        // Redirects to the specific POS Invoice tied to the click
+        frappe.set_route("Form", "POS Invoice", invoice_name);
+    }
+
+    reprint_past_order(invoice_name) {
+        frappe.model.with_doc("POS Invoice", invoice_name, () => {
+            let doc = frappe.get_doc("POS Invoice", invoice_name);
+            let items = doc.items.map(i => ({
+                item_name: i.item_name,
+                qty: i.qty,
+                price: i.rate
+            }));
+            this.print_receipt(doc.name, items, doc.grand_total, doc.paid_amount, doc.change_amount);
+        });
+    }
+
+    // --- Payment & Printing ---
 
     process_payment() {
         let me = this;
@@ -335,6 +390,8 @@ class MiniMartPOS {
                         frappe.show_alert({message: __('Paid Successfully!'), indicator: 'green'});
                         me.cart = [];
                         me.render_cart();
+                        me.load_recent_orders(); 
+
                         if(me.customer_control) me.customer_control.set_value(me.shift_data.customer || "Guest");
                         me.focus_input();
                     }

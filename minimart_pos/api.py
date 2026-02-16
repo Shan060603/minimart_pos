@@ -118,7 +118,7 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
     for i in items:
         invoice.append("items", {
             "item_code": i.get("item_code"),
-            "qty": flt(i.get("qty")), # Supports decimal quantities from JS
+            "qty": flt(i.get("qty")), 
             "rate": flt(i.get("price")),
             "warehouse": profile.warehouse
         })
@@ -126,7 +126,6 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
     invoice.set_missing_values()
     invoice.calculate_taxes_and_totals()
 
-    # Clear default payment rows added by set_missing_values
     invoice.set("payments", [])
     
     payment_account = frappe.db.get_value("Mode of Payment Account", 
@@ -135,7 +134,6 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
     if not payment_account:
         frappe.throw(_("Account not found for {0}").format(mode_of_payment))
 
-    # Add the actual amount paid by customer
     invoice.append("payments", {
         "mode_of_payment": mode_of_payment,
         "account": payment_account,
@@ -149,6 +147,21 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
     frappe.db.set_value("POS Invoice", invoice.name, "pos_opening_entry", opening_data["opening_entry"])
     
     return invoice.name
+
+# --- RECENT ORDERS LOGIC ---
+
+@frappe.whitelist()
+def get_recent_invoices(opening_entry):
+    """Bypasses permissions to fetch invoices for the current shift list."""
+    return frappe.db.get_list('POS Invoice',
+        filters={
+            'pos_opening_entry': opening_entry,
+            'docstatus': 1
+        },
+        fields=['name', 'customer', 'grand_total', 'creation'],
+        order_by='creation desc',
+        limit=10
+    )
 
 # --- IMPROVED CLOSING LOGIC ---
 
@@ -173,7 +186,6 @@ def close_pos_shift(opening_entry):
     closing_doc.period_start_date = opening_doc.period_start_date
     closing_doc.period_end_date = now_datetime()
 
-    # 1. Populate Transactions
     for inv in invoices:
         closing_doc.append("pos_transactions", {
             "pos_invoice": inv.name,
@@ -181,10 +193,8 @@ def close_pos_shift(opening_entry):
             "posting_date": inv.posting_date
         })
 
-    # 2. Get Opening Balances
     opening_amounts = {d.mode_of_payment: d.opening_amount for d in opening_doc.balance_details}
 
-    # 3. Aggregate Payments
     payment_data = frappe.db.sql("""
         SELECT p.mode_of_payment, SUM(p.amount - inv.change_amount) as total_amount
         FROM `tabSales Invoice Payment` p
@@ -193,7 +203,6 @@ def close_pos_shift(opening_entry):
         GROUP BY p.mode_of_payment
     """, (opening_entry), as_dict=1)
 
-    # 4. Reconciliation
     for pay in payment_data:
         mop = pay.mode_of_payment
         opening_amt = flt(opening_amounts.get(mop, 0))

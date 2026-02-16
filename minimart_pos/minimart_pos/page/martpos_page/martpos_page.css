@@ -321,3 +321,40 @@
 .btn-reprint i {
     margin-right: 4px;
 }
+
+.recent-orders-section {
+    border-top: 1px solid #d1d8dd;
+    padding: 10px;
+    background: #f8f9fa;
+}
+
+.recent-orders-header h6 {
+    margin: 0;
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #8d99a6;
+}
+
+.recent-orders-list {
+    max-height: 120px;
+    overflow-y: auto;
+    margin-top: 8px;
+}
+
+.recent-order-item {
+    background: #fff;
+    border: 1px solid #ebedef;
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-bottom: 5px;
+    cursor: pointer;
+    font-size: 11px;
+    transition: background 0.2s;
+}
+
+.recent-order-item:hover {
+    background: #f0f4f7;
+}
+
+.order-id { font-weight: bold; color: var(--primary-color); }
+.order-total { font-weight: bold; }
