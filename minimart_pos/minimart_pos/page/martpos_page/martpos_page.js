@@ -51,7 +51,6 @@ class MiniMartPOS {
         this.last_transaction = null; 
         this.customer_control = null;
         
-        // Updated Selectors to match your new HTML
         this.$scan_input = $('#barcode-scan');
         this.$cart_container = $('#cart-table');
         this.$total_display = $('#grand-total');
@@ -96,12 +95,19 @@ class MiniMartPOS {
     }
 
     bind_events() {
+        // Handle Enter key for Barcodes
         this.$scan_input.on('keypress', (e) => {
             if (e.which == 13) {
                 let code = this.$scan_input.val().trim();
                 if (code) this.fetch_item(code);
                 this.$scan_input.val('');
             }
+        });
+
+        // NEW: Real-time filtering as you type
+        this.$scan_input.on('input', (e) => {
+            let keyword = $(e.currentTarget).val().toLowerCase();
+            this.filter_products(keyword);
         });
 
         $(document).on('click', (e) => {
@@ -126,7 +132,7 @@ class MiniMartPOS {
         let html = products.map(item => {
             const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
             return `
-                <div class="product-card" onclick="pos_instance.add_to_cart(${itemJSON})">
+                <div class="product-card" data-item-name="${item.item_name.toLowerCase()}" data-item-code="${item.item_code.toLowerCase()}" onclick="pos_instance.add_to_cart(${itemJSON})">
                     <div class="product-image">
                         ${item.image ? `<img src="${item.image}">` : `<div class="img-placeholder">${item.item_name[0]}</div>`}
                     </div>
@@ -138,6 +144,28 @@ class MiniMartPOS {
             `;
         }).join('');
         this.$product_grid.html(html);
+    }
+
+    // NEW: Logic to hide/show cards based on search
+    filter_products(keyword) {
+        this.$product_grid.find('.product-card').each(function() {
+            let name = $(this).data('item-name');
+            let code = $(this).data('item-code');
+            
+            if (name.includes(keyword) || code.includes(keyword)) {
+                $(this).show();
+            } else {
+                $(this).hide();
+            }
+        });
+
+        if (this.$product_grid.find('.product-card:visible').length === 0) {
+            if (!$('.no-search-results').length) {
+                this.$product_grid.append('<div class="no-search-results p-5 text-center text-muted">No matching items found</div>');
+            }
+        } else {
+            $('.no-search-results').remove();
+        }
     }
 
     fetch_item(barcode) {
@@ -293,7 +321,6 @@ class MiniMartPOS {
                         d.hide();
                         let change = flt(values.amount_received) - grand_total;
                         
-                        // Store for Reprinting
                         me.last_transaction = {
                             name: r.message,
                             cart: [...me.cart],
@@ -303,7 +330,6 @@ class MiniMartPOS {
                             customer: customer
                         };
 
-                        // Auto Print
                         me.print_receipt(r.message, me.last_transaction.cart, grand_total, flt(values.amount_received), change);
                         
                         frappe.show_alert({message: __('Paid Successfully!'), indicator: 'green'});
