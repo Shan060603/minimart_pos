@@ -178,20 +178,57 @@
     border-bottom: 1px solid #f1f1f1;
 }
 
-.item-meta strong { font-size: 0.95rem; color: #333; }
-.item-meta small { color: #666; }
-
-.btn-remove {
-    background: #fff5f5;
-    color: #e74c3c;
-    border: 1px solid #feb2b2;
-    border-radius: 6px;
-    padding: 2px 8px;
-    cursor: pointer;
-    font-weight: bold;
+.cart-qty-input {
+    width: 60px !important; /* Forces a reasonable width */
+    text-align: center;
+    height: 30px;
+    padding: 2px;
+    border: 1px solid #d1d8dd;
+    border-radius: 4px;
+    display: inline-block;
 }
 
-.btn-remove:hover { background: #fee2e2; }
+/* Ensure the item name section takes up the remaining space */
+.item-meta {
+    flex: 1; 
+    min-width: 0; /* Prevents overflow on very small screens */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The total price for the row */
+.item-total {
+    font-weight: bold;
+    min-width: 80px;
+    text-align: right;
+    margin-right: 15px; /* <--- This creates the space you need */
+    flex-shrink: 0;
+}
+
+.btn-remove {
+    background: none;
+    border: none;
+    color: #ff5858;
+    cursor: pointer;
+    font-size: 20px;
+    padding: 0 5px;
+    line-height: 1;
+    transition: transform 0.1s ease;
+}
+
+.btn-remove:hover {
+    transform: scale(1.2);
+    color: #ff0000;
+}
+
+.cart-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 10px;
+    border-bottom: 1px solid #f0f0f0;
+}
 
 /* --- 💰 FOOTER & CHECKOUT --- */
 .cart-footer { padding: 20px; background: #f8f9fa; border-top: 1px solid #d1d8dd; }
@@ -233,10 +270,9 @@
 .qty-controls {
     display: flex;
     align-items: center;
-    gap: 10px;
-    background: #f1f3f5;
-    border-radius: 20px;
-    padding: 2px 8px;
+    gap: 4px; /* Small space between buttons and input */
+    margin: 0 10px;
+    flex-shrink: 0; /* Prevents the whole control block from squishing */
 }
 
 .btn-qty {
@@ -262,4 +298,26 @@
     font-weight: bold;
     min-width: 20px;
     text-align: center;
+}
+
+.btn-reprint {
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    text-transform: uppercase;
+    font-weight: bold;
+    color: #555;
+    background: #fff;
+    border: 1px solid #d1d8dd;
+    transition: all 0.2s;
+}
+
+.btn-reprint:hover {
+    background: #f8f9fa;
+    border-color: #8d99a6;
+    color: #24292e;
+}
+
+.btn-reprint i {
+    margin-right: 4px;
 }

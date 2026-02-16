@@ -48,9 +48,10 @@ class MiniMartPOS {
         this.page = page;
         this.shift_data = shift_data;
         this.cart = [];
+        this.last_transaction = null; 
         this.customer_control = null;
         
-        // Selectors
+        // Updated Selectors to match your new HTML
         this.$scan_input = $('#barcode-scan');
         this.$cart_container = $('#cart-table');
         this.$total_display = $('#grand-total');
@@ -159,7 +160,7 @@ class MiniMartPOS {
     add_to_cart(item) {
         let existing = this.cart.find(i => i.item_code === item.item_code);
         if (existing) {
-            existing.qty += 1;
+            existing.qty = flt(existing.qty) + 1;
         } else {
             this.cart.push({
                 item_code: item.item_code,
@@ -182,7 +183,6 @@ class MiniMartPOS {
         }
     }
 
-    // --- NEW: Handle manual decimal input ---
     manual_qty_update(index, value) {
         let val = flt(value);
         if (val <= 0) {
@@ -190,42 +190,37 @@ class MiniMartPOS {
         } else {
             this.cart[index].qty = val;
             this.update_total();
-            
-            // Update row total display without full re-render
             let row_total = (this.cart[index].qty * this.cart[index].price).toFixed(2);
-            $(`.cart-row[data-index="${index}"] .item-total`).text(`₱${row_total}`);
+            $(`.cart-row[data-index="${index}"] .item-total-val`).text(row_total);
         }
     }
 
     render_cart() {
         let html = this.cart.map((item, index) => `
-            <div class="cart-row" data-index="${index}" style="display: flex; align-items: center; justify-content: space-between; padding: 10px; border-bottom: 1px solid #f0f0f0;">
-                <div class="item-meta" style="flex: 1;">
-                    <strong>${item.item_name || item.item_code}</strong><br>
-                    <small>₱${item.price.toFixed(2)}</small>
+            <div class="cart-row" data-index="${index}">
+                <div class="item-meta">
+                    <div class="item-name">${item.item_name || item.item_code}</div>
+                    <div class="item-price">₱${item.price.toFixed(2)}</div>
                 </div>
                 
-                <div class="qty-controls" style="display: flex; align-items: center; gap: 5px; margin: 0 15px;">
-                    <button onclick="pos_instance.update_qty(${index}, -1)" class="btn btn-xs btn-default" style="font-weight: bold;">-</button>
-                    
-                    <input type="number" step="any" class="form-control cart-qty-input" 
+                <div class="qty-controls">
+                    <button onclick="pos_instance.update_qty(${index}, -1)" class="btn-qty">-</button>
+                    <input type="number" step="any" class="cart-qty-input" 
                         value="${item.qty}" 
-                        style="width: 65px; text-align: center; height: 28px; padding: 2px; font-size: 13px;"
                         onchange="pos_instance.manual_qty_update(${index}, this.value)">
-                    
-                    <button onclick="pos_instance.update_qty(${index}, 1)" class="btn btn-xs btn-default" style="font-weight: bold;">+</button>
+                    <button onclick="pos_instance.update_qty(${index}, 1)" class="btn-qty">+</button>
                 </div>
 
-                <div class="item-total" style="font-weight: bold; min-width: 80px; text-align: right;">
-                    ₱${(item.qty * item.price).toFixed(2)}
+                <div class="item-total">
+                    ₱<span class="item-total-val">${(item.qty * item.price).toFixed(2)}</span>
                 </div>
                 
-                <button onclick="pos_instance.remove_item(${index})" class="btn-remove" style="background: none; border: none; color: #ff5858; margin-left: 10px; cursor: pointer; font-size: 18px;">×</button>
+                <button onclick="pos_instance.remove_item(${index})" class="btn-remove">×</button>
             </div>
         `).join('');
 
         if (this.cart.length === 0) {
-            html = `<div class="p-5 text-center text-muted">${__('No items in cart')}</div>`;
+            html = `<div class="empty-cart-msg">${__('No items in cart')}</div>`;
         }
 
         $('#cart-count').text(`${this.cart.length} Items`);
@@ -257,46 +252,26 @@ class MiniMartPOS {
         let d = new frappe.ui.Dialog({
             title: __('Finalize Payment'),
             fields: [
-                {
-                    label: __('Total Payable'),
-                    fieldname: 'total_payable',
-                    fieldtype: 'Currency',
-                    default: grand_total,
-                    read_only: 1
-                },
-                {
-                    label: __('Mode of Payment'),
-                    fieldname: 'mode_of_payment',
-                    fieldtype: 'Select',
-                    options: me.shift_data.payment_methods || ['Cash'],
-                    default: me.shift_data.payment_methods ? me.shift_data.payment_methods[0] : 'Cash'
-                },
-                {
-                    label: __('Amount Received'),
-                    fieldname: 'amount_received',
-                    fieldtype: 'Currency',
-                    default: grand_total,
-                    onchange: function() {
+                { label: __('Total Payable'), fieldname: 'total_payable', fieldtype: 'Currency', default: grand_total, read_only: 1 },
+                { label: __('Mode of Payment'), fieldname: 'mode_of_payment', fieldtype: 'Select', 
+                  options: me.shift_data.payment_methods || ['Cash'], 
+                  default: me.shift_data.payment_methods ? me.shift_data.payment_methods[0] : 'Cash' },
+                { label: __('Amount Received'), fieldname: 'amount_received', fieldtype: 'Currency', default: grand_total,
+                  onchange: function() {
                         let received = flt(this.get_value());
                         let change = received - grand_total;
                         d.set_df_property('change_display', 'options', 
-                            `<div style="text-align: right; margin-top: 10px;">
-                                <span style="font-size: 0.9rem; color: #666;">Change to return:</span><br>
+                            `<div class="text-right mt-2">
+                                <span class="text-muted">Change to return:</span><br>
                                 <span style="font-size: 1.8rem; font-weight: bold; color: ${change >= 0 ? '#27ae60' : '#e74c3c'}">
                                     ₱${change >= 0 ? change.toFixed(2) : '0.00'}
                                 </span>
                             </div>`
                         );
-                    }
+                  }
                 },
-                {
-                    fieldtype: 'HTML',
-                    fieldname: 'change_display',
-                    options: `<div style="text-align: right; margin-top: 10px;">
-                                <span style="font-size: 0.9rem; color: #666;">Change to return:</span><br>
-                                <span style="font-size: 1.8rem; font-weight: bold; color: #27ae60;">₱0.00</span>
-                              </div>`
-                }
+                { fieldtype: 'HTML', fieldname: 'change_display', 
+                  options: `<div class="text-right mt-2"><span class="text-muted">Change to return:</span><br><span style="font-size: 1.8rem; font-weight: bold; color: #27ae60;">₱0.00</span></div>` }
             ],
             primary_action_label: __('Complete Sale'),
             primary_action(values) {
@@ -316,6 +291,21 @@ class MiniMartPOS {
                     freeze: true,
                     callback: (r) => {
                         d.hide();
+                        let change = flt(values.amount_received) - grand_total;
+                        
+                        // Store for Reprinting
+                        me.last_transaction = {
+                            name: r.message,
+                            cart: [...me.cart],
+                            total: grand_total,
+                            paid: flt(values.amount_received),
+                            change: change,
+                            customer: customer
+                        };
+
+                        // Auto Print
+                        me.print_receipt(r.message, me.last_transaction.cart, grand_total, flt(values.amount_received), change);
+                        
                         frappe.show_alert({message: __('Paid Successfully!'), indicator: 'green'});
                         me.cart = [];
                         me.render_cart();
@@ -325,12 +315,55 @@ class MiniMartPOS {
                 });
             }
         });
-
         d.show();
+        setTimeout(() => d.get_field('amount_received').$input.select(), 400);
+    }
 
-        setTimeout(() => {
-            d.get_field('amount_received').$input.select();
-        }, 400);
+    print_receipt(name, cart, total, paid, change) {
+        let print_window = window.open('', 'PRINT', 'height=600,width=400');
+        let receipt_html = `
+            <html>
+            <head>
+                <style>
+                    body { font-family: 'Courier New', monospace; width: 300px; font-size: 12px; padding: 10px; }
+                    .center { text-align: center; }
+                    .hr { border-bottom: 1px dashed #000; margin: 5px 0; }
+                    table { width: 100%; border-collapse: collapse; }
+                    .flex { display: flex; justify-content: space-between; }
+                </style>
+            </head>
+            <body onload="window.print(); window.close();">
+                <div class="center">
+                    <h3 style="margin:0;">${this.shift_data.company}</h3>
+                    <p>OFFICIAL RECEIPT</p>
+                </div>
+                <div class="hr"></div>
+                <div>Inv: ${name}</div>
+                <div>Date: ${frappe.datetime.now_datetime()}</div>
+                <div class="hr"></div>
+                <table>
+                    ${cart.map(i => `<tr><td>${i.item_name}</td><td align="right">${i.qty} x ${i.price.toFixed(2)}</td><td align="right">₱${(i.qty * i.price).toFixed(2)}</td></tr>`).join('')}
+                </table>
+                <div class="hr"></div>
+                <div class="flex"><strong>TOTAL:</strong><strong>₱${total.toFixed(2)}</strong></div>
+                <div class="flex"><span>PAID:</span><span>₱${paid.toFixed(2)}</span></div>
+                <div class="flex"><span>CHANGE:</span><span>₱${change.toFixed(2)}</span></div>
+                <div class="hr"></div>
+                <div class="center"><p>THANK YOU!</p></div>
+            </body>
+            </html>
+        `;
+        print_window.document.write(receipt_html);
+        print_window.document.close();
+    }
+
+    reprint_last() {
+        if (!this.last_transaction) {
+            frappe.show_alert({message: __("No recent transaction found"), indicator: 'orange'});
+            return;
+        }
+        let lt = this.last_transaction;
+        this.print_receipt(lt.name, lt.cart, lt.total, lt.paid, lt.change);
     }
 
     close_shift() {

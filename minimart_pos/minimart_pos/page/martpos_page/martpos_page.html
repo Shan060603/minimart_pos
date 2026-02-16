@@ -1,8 +1,10 @@
 <div class="pos-wrapper">
+    <input type="text" id="barcode-scan-hidden" style="position: absolute; opacity: 0; pointer-events: none;">
+
     <div class="pos-body">
         <div class="scanner-container">
             <div class="input-group">
-                <input type="text" id="barcode-scan" placeholder="Scan Barcode or Search Items..." autofocus>
+                <input type="text" id="barcode-scan" class="form-control" placeholder="Scan Barcode or Search Items..." autofocus>
             </div>
         </div>
         
@@ -13,12 +15,17 @@
 
     <div class="pos-sidebar">
         <div class="customer-section">
-            <label class="customer-label">CUSTOMER</label>
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <label class="customer-label m-0">CUSTOMER</label>
+                <button class="btn btn-xs btn-default btn-reprint" onclick="pos_instance.reprint_last()" title="Reprint Last Receipt">
+                    <i class="fa fa-print"></i> Reprint
+                </button>
+            </div>
             <div id="customer-search-container"></div> 
         </div>
 
-        <div class="cart-header">
-            <h3>Current Sale</h3>
+        <div class="cart-header d-flex justify-content-between align-items-center">
+            <h3 class="m-0">Current Sale</h3>
             <span class="item-count-badge" id="cart-count">0 Items</span>
         </div>
         
