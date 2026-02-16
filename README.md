@@ -1,33 +1,28 @@
-### Minimart Pos
+# 🛒 MiniMart POS for Frappe/ERPNext
 
-POS Specifically for Minimart/Sari-Sari Store
+A lightweight, responsive, and barcode-ready Point of Sale (POS) system built as a custom page for Frappe. Designed for speed, it handles the full retail cycle from scanning to shift reconciliation.
 
-### Installation
 
-You can install this app using the [bench](https://github.com/frappe/bench) CLI:
+
+## 🚀 Quick Features
+* **Adaptive UI**: Automatically switches layout for Mobile, Tablet, and Desktop.
+* **Fast Scanning**: Optimized for USB/Bluetooth barcode scanners with auto-focus.
+* **Shift Logic**: Integrated with `POS Opening Entry` and `POS Closing Entry`.
+* **Financial Accuracy**: Correctly handles "Amount Paid" vs "Change" to ensure your ledgers balance.
+
+---
+
+## 🛠️ Installation
+
+Run these commands in your `frappe-bench` directory:
 
 ```bash
-cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch develop
-bench install-app minimart_pos
-```
+# 1. Download the app
+bench get-app https://github.com/Shan060603/minimart_pos.git
 
-### Contributing
+# 2. Install it on your site
+bench --site [your-site-name] install-app minimart_pos
 
-This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
-
-```bash
-cd apps/minimart_pos
-pre-commit install
-```
-
-Pre-commit is configured to use the following tools for checking and formatting your code:
-
-- ruff
-- eslint
-- prettier
-- pyupgrade
-
-### License
-
-mit
+# 3. Build assets and restart
+bench build --app minimart_pos
+bench restart
