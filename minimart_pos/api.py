@@ -59,14 +59,16 @@ def create_opening_entry(pos_profile, amount=0):
 
 @frappe.whitelist()
 def get_products():
-    """Fetches items with Live Stock based on the POS Profile Warehouse."""
+    """Fetches items with Live Stock and Item Group."""
     profile = get_assigned_pos_profile()
     
+    # ADDED: i.item_group to the SELECT statement
     return frappe.db.sql("""
         SELECT 
             i.name as item_code, 
             i.item_name, 
             i.image,
+            i.item_group,
             COALESCE(ip.price_list_rate, 0) as price,
             COALESCE(b.actual_qty, 0) as actual_qty
         FROM `tabItem` i 
@@ -81,7 +83,7 @@ def get_products():
 
 @frappe.whitelist()
 def get_item_by_barcode(barcode):
-    """Searches for an item with its current stock level."""
+    """Searches for an item with its current stock level and group."""
     item_code = frappe.db.get_value("Item Barcode", {"barcode": barcode}, "parent")
     
     if not item_code:
@@ -90,11 +92,13 @@ def get_item_by_barcode(barcode):
 
     if item_code:
         profile = get_assigned_pos_profile()
+        # ADDED: i.item_group to the SELECT statement
         item_data = frappe.db.sql("""
             SELECT 
                 i.name as item_code, 
                 i.item_name, 
                 i.image,
+                i.item_group,
                 COALESCE((SELECT price_list_rate FROM `tabItem Price` 
                           WHERE item_code = i.name AND price_list = %s LIMIT 1), 0) as price,
                 COALESCE((SELECT actual_qty FROM `tabBin` 
@@ -150,14 +154,12 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
     paid = flt(amount_paid)
     change = paid - total_to_pay if paid > total_to_pay else 0
     
-    # Save raw data for Receipt Printing
     invoice.paid_amount = paid
     invoice.change_amount = change
 
     payment_account = frappe.db.get_value("Mode of Payment Account", 
         {"parent": mode_of_payment, "company": profile.company}, "default_account")
 
-    # FIX: Record only the net total. We already handle 'change' via DB set_value.
     invoice.append("payments", {
         "mode_of_payment": mode_of_payment,
         "account": payment_account,
@@ -166,7 +168,6 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
 
     invoice.insert()
     
-    # Force DB submission
     frappe.db.set_value("POS Invoice", invoice.name, {
         "docstatus": 1,
         "status": "Paid",
@@ -174,7 +175,6 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
         "change_amount": change
     }, update_modified=False)
     
-    # v15 Accounting Engine Patch - Satisfies UnboundLocalError
     doc = frappe.get_doc("POS Invoice", invoice.name)
     doc.__dict__.update({
         'enable_discount_accounting': 0,
@@ -259,7 +259,6 @@ def close_pos_shift(opening_entry):
     closing_doc.net_total = total_net
     closing_doc.total_quantity = total_q
 
-    # FIXED: We SUM p.amount directly. We do NOT subtract change again.
     payment_data = frappe.db.sql("""
         SELECT p.mode_of_payment, SUM(p.amount) as total_amount
         FROM `tabSales Invoice Payment` p
@@ -271,7 +270,6 @@ def close_pos_shift(opening_entry):
     opening_amounts = {d.mode_of_payment: d.opening_amount for d in opening_doc.balance_details}
     reconciled_mops = {p.mode_of_payment: p.total_amount for p in payment_data}
     
-    # Get all payment methods from profile to ensure clean 0.00 lines
     profile_mops = frappe.get_doc("POS Profile", opening_doc.pos_profile).payments
 
     for mop_row in profile_mops:

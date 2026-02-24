@@ -3,8 +3,12 @@
 
     <div class="pos-body">
         <div class="scanner-container">
-            <div class="input-group">
-                <input type="text" id="barcode-scan" class="form-control" placeholder="Scan Barcode or Search Items..." autofocus>
+            <div class="input-group d-flex gap-2">
+                <select id="item-group-filter" class="form-control" style="max-width: 180px; font-weight: bold; border-radius: 8px;">
+                    <option value="">All Groups</option>
+                </select>
+
+                <input type="text" id="barcode-scan" class="form-control" placeholder="Scan Barcode or Search Items..." autofocus style="border-radius: 8px;">
             </div>
         </div>
         
@@ -13,6 +17,7 @@
                 <small class="text-muted"><i class="fa fa-circle text-success"></i> System Ready</small>
             </div>
         </div>
+
         <div id="product-grid" class="product-grid">
             <div class="pos-loading-state">Loading products...</div>
         </div>

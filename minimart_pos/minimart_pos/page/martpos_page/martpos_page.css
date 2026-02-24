@@ -20,7 +20,13 @@
         border-top: 2px solid #d1d8dd;
     }
     .product-grid {
-        height: 50vh; /* Limits product area on mobile so sidebar is visible */
+        height: 50vh; 
+    }
+    .scanner-container .input-group {
+        flex-direction: column; /* Stack filter and search on small mobile */
+    }
+    #item-group-filter {
+        max-width: 100% !important;
     }
 }
 
@@ -31,18 +37,45 @@
     overflow: hidden;
 }
 
-.scanner-container { padding: 15px; background: #fff; border-bottom: 1px solid #d1d8dd; }
+.scanner-container { 
+    padding: 15px; 
+    background: #fff; 
+    border-bottom: 1px solid #d1d8dd; 
+}
 
-#barcode-scan {
-    width: 100%;
-    padding: 12px 20px;
-    font-size: 1.2rem;
+/* --- 🏷️ ITEM GROUP FILTER STYLING --- */
+#item-group-filter {
     border: 2px solid #171717;
     border-radius: 10px;
+    padding: 0 15px;
+    height: 52px; /* Matches the height of the search bar */
+    background-color: #f8f9fa;
+    color: #171717;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+#item-group-filter:focus {
+    border-color: #3498db;
+    background-color: #fff;
     outline: none;
 }
 
-#barcode-scan:focus { border-color: #3498db; box-shadow: 0 0 5px rgba(52, 152, 219, 0.3); }
+#barcode-scan {
+    flex: 1;
+    padding: 12px 20px;
+    font-size: 1.1rem;
+    border: 2px solid #171717;
+    border-radius: 10px;
+    outline: none;
+    height: 52px;
+}
+
+#barcode-scan:focus { 
+    border-color: #3498db; 
+    box-shadow: 0 0 5px rgba(52, 152, 219, 0.3); 
+}
 
 /* --- 🛍️ PRODUCT GRID STYLING --- */
 .product-grid {
@@ -67,6 +100,7 @@
     flex-direction: column;
     height: 220px; 
     justify-content: space-between;
+    position: relative; /* Essential for the stock-badge */
 }
 
 .product-card:hover {
@@ -130,7 +164,6 @@
     text-transform: uppercase;
 }
 
-/* Ensure Frappe's native dropdown is visible and styled */
 .awesomplete > ul {
     z-index: 1000 !important;
     background: white !important;
@@ -140,7 +173,6 @@
     padding: 5px 0 !important;
 }
 
-/* Make the Link input look consistent with your UI */
 #customer-search-container .form-control {
     border: 1px solid #d1d8dd;
     border-radius: 6px;
@@ -180,7 +212,7 @@
 }
 
 .cart-qty-input {
-    width: 60px !important; /* Forces a reasonable width */
+    width: 60px !important;
     text-align: center;
     height: 30px;
     padding: 2px;
@@ -189,21 +221,19 @@
     display: inline-block;
 }
 
-/* Ensure the item name section takes up the remaining space */
 .item-meta {
     flex: 1; 
-    min-width: 0; /* Prevents overflow on very small screens */
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-/* The total price for the row */
 .item-total {
     font-weight: bold;
     min-width: 80px;
     text-align: right;
-    margin-right: 15px; /* <--- This creates the space you need */
+    margin-right: 15px;
     flex-shrink: 0;
 }
 
@@ -221,14 +251,6 @@
 .btn-remove:hover {
     transform: scale(1.2);
     color: #ff0000;
-}
-
-.cart-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 10px;
-    border-bottom: 1px solid #f0f0f0;
 }
 
 /* --- 💰 FOOTER & CHECKOUT --- */
@@ -263,17 +285,12 @@
 
 #checkout-btn:hover { background: #219150; box-shadow: 0 4px 12px rgba(39, 174, 96, 0.2); }
 
-.text-right {
-    text-align: right;
-    margin-top: 10px;
-}
-
 .qty-controls {
     display: flex;
     align-items: center;
-    gap: 4px; /* Small space between buttons and input */
+    gap: 4px;
     margin: 0 10px;
-    flex-shrink: 0; /* Prevents the whole control block from squishing */
+    flex-shrink: 0;
 }
 
 .btn-qty {
@@ -281,7 +298,7 @@
     background: transparent;
     font-size: 1.2rem;
     font-weight: bold;
-    color: var(--primary);
+    color: #3498db;
     cursor: pointer;
     width: 25px;
     height: 25px;
@@ -295,12 +312,6 @@
     border-radius: 50%;
 }
 
-.qty-number {
-    font-weight: bold;
-    min-width: 20px;
-    text-align: center;
-}
-
 .btn-reprint {
     border-radius: 4px;
     padding: 2px 8px;
@@ -310,81 +321,51 @@
     color: #555;
     background: #fff;
     border: 1px solid #d1d8dd;
-    transition: all 0.2s;
 }
 
-.btn-reprint:hover {
-    background: #f8f9fa;
-    border-color: #8d99a6;
-    color: #24292e;
-}
-
-.btn-reprint i {
-    margin-right: 4px;
-}
-
-.recent-orders-section {
+.recent-orders-wrapper {
     border-top: 1px solid #d1d8dd;
     padding: 10px;
     background: #f8f9fa;
 }
 
-.recent-orders-header h6 {
-    margin: 0;
-    font-size: 12px;
-    text-transform: uppercase;
+.recent-orders-header {
+    font-size: 11px;
+    font-weight: bold;
     color: #8d99a6;
+    text-transform: uppercase;
+    margin-bottom: 8px;
 }
 
 .recent-orders-list {
-    max-height: 120px;
+    max-height: 150px;
     overflow-y: auto;
-    margin-top: 8px;
 }
 
 .recent-order-item {
     background: #fff;
     border: 1px solid #ebedef;
-    border-radius: 4px;
-    padding: 6px 8px;
-    margin-bottom: 5px;
-    cursor: pointer;
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 6px;
     font-size: 11px;
-    transition: background 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
-
-.recent-order-item:hover {
-    background: #f0f4f7;
-}
-
-.order-id { font-weight: bold; color: var(--primary-color); }
-.order-total { font-weight: bold; }
 
 /* --- 🟢 STOCK STATUS COLORS --- */
-.stock-badge.bg-success {
-    background-color: #28a745 !important; /* Solid Green */
-}
-
-.stock-badge.bg-danger {
-    background-color: #dc3545 !important; /* Solid Red */
-}
-
-.stock-badge.bg-warning {
-    background-color: #ffc107 !important; /* Yellow for low stock */
-    color: #000 !important;
-}
-
-/* --- 🎨 IMPROVED BADGE DESIGN --- */
 .stock-badge {
     position: absolute;
     top: 8px;
     right: 8px;
     padding: 3px 8px;
-    border-radius: 6px; /* Slightly rounder for modern look */
+    border-radius: 6px;
     color: white;
     font-size: 11px;
     font-weight: bold;
     z-index: 10;
     box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-    text-shadow: 1px 1px 1px rgba(0,0,0,0.1);
 }
+
+.stock-badge.bg-success { background-color: #28a745 !important; }
+.stock-badge.bg-danger { background-color: #dc3545 !important; }
+.stock-badge.bg-warning { background-color: #ffc107 !important; color: #000 !important; }

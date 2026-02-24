@@ -60,20 +60,16 @@ function render_pos_ui(page, shift_data) {
     window.pos_instance = new MiniMartPOS(page, shift_data);
     window.pos_instance.init();
 
-    // --- PAGE ACTIONS (Updated) ---
-
-    // 1. Primary Action: Open Drawer (Replaced Sync Stock)
+    // --- PAGE ACTIONS ---
     page.set_primary_action(__('Open Drawer'), () => {
         window.pos_instance.trigger_cash_drawer();
         frappe.show_alert({message: __('Opening Cash Drawer...'), indicator: 'green'});
     });
 
-    // 2. Menu Item: Close Shift
     page.add_menu_item(__('Close Shift'), () => {
         window.pos_instance.close_shift();
     });
 
-    // 3. Menu Item: Sync Stock (Moved from primary button to menu)
     page.add_menu_item(__('Sync Stock Levels'), () => {
         window.pos_instance.load_products();
         frappe.show_alert({message: __('Stock levels updated from server'), indicator: 'blue'});
@@ -90,6 +86,7 @@ class MiniMartPOS {
         
         // Selectors
         this.$scan_input = $('#barcode-scan');
+        this.$group_filter = $('#item-group-filter'); // New Group Filter
         this.$cart_container = $('#cart-table');
         this.$total_display = $('#grand-total');
         this.$product_grid = $('#product-grid');
@@ -99,6 +96,7 @@ class MiniMartPOS {
     init() {
         this.setup_customer_control();
         this.bind_events();
+        this.load_item_groups(); // Load groups into dropdown
         this.load_products();
         this.load_recent_orders();
         this.focus_input();
@@ -144,14 +142,20 @@ class MiniMartPOS {
             }
         });
 
-        this.$scan_input.on('input', (e) => {
-            let keyword = $(e.currentTarget).val().toLowerCase();
-            this.filter_products(keyword);
+        // Trigger filter on text input
+        this.$scan_input.on('input', () => {
+            this.filter_products();
+        });
+
+        // Trigger filter on group change
+        this.$group_filter.on('change', () => {
+            this.filter_products();
+            this.focus_input();
         });
 
         // Global click listener to refocus input
         $(document).on('click', (e) => {
-            if (!$(e.target).closest('#barcode-scan, #customer-search-container, .awesomplete, .modal-dialog, .cart-qty-input').length) {
+            if (!$(e.target).closest('#barcode-scan, #item-group-filter, #customer-search-container, .awesomplete, .modal-dialog, .cart-qty-input').length) {
                 setTimeout(() => this.focus_input(), 1000);
             }
         });
@@ -161,17 +165,10 @@ class MiniMartPOS {
 
     async trigger_cash_drawer() {
         try {
-            // Web Serial API logic to send kick signal to printer
-            if (!("serial" in navigator)) {
-                console.warn("Web Serial not supported");
-                return;
-            }
-            if (!this.serialPort) {
-                this.serialPort = await navigator.serial.requestPort();
-            }
+            if (!("serial" in navigator)) return;
+            if (!this.serialPort) this.serialPort = await navigator.serial.requestPort();
             await this.serialPort.open({ baudRate: 9600 });
             const writer = this.serialPort.writable.getWriter();
-            // Standard ESC/POS command for cash drawer kick
             await writer.write(new Uint8Array([27, 112, 0, 25, 250])); 
             writer.releaseLock();
             await this.serialPort.close();
@@ -179,6 +176,25 @@ class MiniMartPOS {
             console.error("Serial Port Error:", err);
             this.serialPort = null;
         }
+    }
+
+    load_item_groups() {
+        frappe.call({
+            method: "frappe.client.get_list",
+            args: {
+                doctype: "Item Group",
+                filters: { "is_group": 0 },
+                fields: ["name"],
+                limit_page_length: 100,
+                order_by: "name asc"
+            },
+            callback: (r) => {
+                if (r.message) {
+                    let options = r.message.map(g => `<option value="${g.name}">${g.name}</option>`);
+                    this.$group_filter.append(options.join(''));
+                }
+            }
+        });
     }
 
     load_products() {
@@ -195,7 +211,6 @@ class MiniMartPOS {
         let html = products.map(item => {
             const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
             
-            // Updated color logic to match your CSS classes
             let badge_class = 'bg-success';
             if (item.actual_qty <= 0) badge_class = 'bg-danger';
             else if (item.actual_qty <= 5) badge_class = 'bg-warning';
@@ -204,6 +219,7 @@ class MiniMartPOS {
                 <div class="product-card" 
                      data-item-code="${item.item_code.toLowerCase()}" 
                      data-item-name="${item.item_name.toLowerCase()}"
+                     data-item-group="${item.item_group || ''}"
                      onclick="pos_instance.add_to_cart(${itemJSON})">
                     <div class="product-image">
                         <span class="stock-badge ${badge_class}">
@@ -219,13 +235,22 @@ class MiniMartPOS {
             `;
         }).join('');
         this.$product_grid.html(html);
+        this.filter_products(); // Re-apply current filters after render
     }
 
-    filter_products(keyword) {
+    filter_products() {
+        let keyword = this.$scan_input.val().toLowerCase();
+        let selected_group = this.$group_filter.val();
+
         this.$product_grid.find('.product-card').each(function() {
             let name = $(this).attr('data-item-name') || "";
             let code = $(this).attr('data-item-code') || "";
-            if (name.includes(keyword) || code.includes(keyword)) $(this).show();
+            let group = $(this).attr('data-item-group') || "";
+
+            let matches_search = name.includes(keyword) || code.includes(keyword);
+            let matches_group = selected_group === "" || group === selected_group;
+
+            if (matches_search && matches_group) $(this).show();
             else $(this).hide();
         });
     }
@@ -239,7 +264,7 @@ class MiniMartPOS {
                     this.add_to_cart(r.message);
                     frappe.utils.play_sound("submit");
                     this.$scan_input.val(''); 
-                    this.filter_products(''); 
+                    this.filter_products(); 
                 } else {
                     frappe.show_alert({message: __('Item not found'), indicator: 'red'});
                     frappe.utils.play_sound("error");
@@ -252,7 +277,7 @@ class MiniMartPOS {
     add_to_cart(item) {
         let $card = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"]`);
         let $badge = $card.find('.stock-badge');
-        let current_stock = parseFloat($badge.text());
+        let current_stock = parseFloat($badge.text()) || 0;
 
         if (current_stock <= 0) {
             frappe.show_alert({message: __('Out of stock!'), indicator: 'red'});
@@ -271,11 +296,9 @@ class MiniMartPOS {
             });
         }
 
-        // Update UI Badge
         let new_stock = current_stock - 1;
         $badge.text(new_stock);
         
-        // Update Class for color to match your CSS
         $badge.removeClass('bg-success bg-warning bg-danger');
         if (new_stock <= 0) $badge.addClass('bg-danger');
         else if (new_stock <= 5) $badge.addClass('bg-warning');
@@ -288,7 +311,7 @@ class MiniMartPOS {
         let item = this.cart[index];
         let $card = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"]`);
         let $badge = $card.find('.stock-badge');
-        let current_stock = parseFloat($badge.text());
+        let current_stock = parseFloat($badge.text()) || 0;
 
         if (delta > 0 && current_stock <= 0) {
             frappe.show_alert({message: __('No more stock'), indicator: 'orange'});
@@ -296,8 +319,6 @@ class MiniMartPOS {
         }
 
         item.qty = flt(item.qty) + delta;
-        
-        // Restore/Deduct Badge
         let new_stock = current_stock - delta;
         $badge.text(new_stock);
         
@@ -321,7 +342,7 @@ class MiniMartPOS {
 
         let $card = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"]`);
         let $badge = $card.find('.stock-badge');
-        let current_stock = parseFloat($badge.text());
+        let current_stock = parseFloat($badge.text()) || 0;
 
         if (diff > current_stock) {
             frappe.show_alert({message: __('Insufficient Stock'), indicator: 'orange'});
@@ -465,20 +486,8 @@ class MiniMartPOS {
         let d = new frappe.ui.Dialog({
             title: __('Finalize Payment'),
             fields: [
-                { 
-                    label: __('Total Payable'), 
-                    fieldname: 'total_payable', 
-                    fieldtype: 'Currency', 
-                    default: grand_total, 
-                    read_only: 1 
-                },
-                { 
-                    label: __('Mode of Payment'), 
-                    fieldname: 'mode_of_payment', 
-                    fieldtype: 'Select', 
-                    options: me.shift_data.payment_methods || ['Cash'], 
-                    default: me.shift_data.payment_methods ? me.shift_data.payment_methods[0] : 'Cash' 
-                },
+                { label: __('Total Payable'), fieldname: 'total_payable', fieldtype: 'Currency', default: grand_total, read_only: 1 },
+                { label: __('Mode of Payment'), fieldname: 'mode_of_payment', fieldtype: 'Select', options: me.shift_data.payment_methods || ['Cash'], default: me.shift_data.payment_methods ? me.shift_data.payment_methods[0] : 'Cash' },
                 { 
                     label: __('Amount Received'), 
                     fieldname: 'amount_received', 
@@ -488,21 +497,11 @@ class MiniMartPOS {
                         let received = flt(this.get_value());
                         let change = received - grand_total;
                         let $change_val = d.get_field('change_display').$wrapper.find('.change-val');
-                        
                         $change_val.text('₱' + (change >= 0 ? change.toFixed(2) : '0.00'));
                         $change_val.css('color', change >= 0 ? '#27ae60' : '#e74c3c');
                     }
                 },
-                { 
-                    fieldtype: 'HTML', 
-                    fieldname: 'change_display', 
-                    options: `
-                        <div class="text-right mt-2">
-                            <span class="text-muted">Change:</span><br>
-                            <span class="change-val" style="font-size: 1.8rem; font-weight: bold; color: #27ae60;">₱0.00</span>
-                        </div>
-                    ` 
-                }
+                { fieldtype: 'HTML', fieldname: 'change_display', options: `<div class="text-right mt-2"><span class="text-muted">Change:</span><br><span class="change-val" style="font-size: 1.8rem; font-weight: bold; color: #27ae60;">₱0.00</span></div>` }
             ],
             primary_action_label: __('Complete Sale'),
             primary_action(values) {
@@ -525,9 +524,7 @@ class MiniMartPOS {
                         d.hide();
                         let change = flt(values.amount_received) - grand_total;
                         me.print_receipt(r.message, [...me.cart], grand_total, flt(values.amount_received), change);
-                        
                         frappe.show_alert({message: __('Paid Successfully!'), indicator: 'green'});
-                        
                         me.cart = [];
                         me.render_cart();
                         me.load_recent_orders();
