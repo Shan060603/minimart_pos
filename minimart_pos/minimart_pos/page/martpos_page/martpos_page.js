@@ -135,22 +135,28 @@ class MiniMartPOS {
     }
 
     render_products(products) {
-        let html = products.map(item => {
-            const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
-            return `
-                <div class="product-card" data-item-name="${item.item_name.toLowerCase()}" data-item-code="${item.item_code.toLowerCase()}" onclick="pos_instance.add_to_cart(${itemJSON})">
-                    <div class="product-image">
-                        ${item.image ? `<img src="${item.image}">` : `<div class="img-placeholder">${item.item_name[0]}</div>`}
-                    </div>
-                    <div class="product-details">
-                        <div class="product-name">${item.item_name}</div>
-                        <div class="product-price">₱${flt(item.price).toFixed(2)}</div>
-                    </div>
+    let html = products.map(item => {
+        const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
+        // Determine badge color based on stock levels
+        const stockColor = item.actual_qty > 5 ? '#27ae60' : (item.actual_qty > 0 ? '#f39c12' : '#e74c3c');
+        
+        return `
+            <div class="product-card" data-item-code="${item.item_code.toLowerCase()}" onclick="pos_instance.add_to_cart(${itemJSON})">
+                <div class="product-image">
+                    <span class="stock-badge" style="background: ${stockColor};">
+                        ${Math.floor(item.actual_qty)}
+                    </span>
+                    ${item.image ? `<img src="${item.image}">` : `<div class="img-placeholder">${item.item_name[0]}</div>`}
                 </div>
-            `;
-        }).join('');
-        this.$product_grid.html(html);
-    }
+                <div class="product-details">
+                    <div class="product-name">${item.item_name}</div>
+                    <div class="product-price">₱${flt(item.price).toFixed(2)}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+    this.$product_grid.html(html);
+}
 
     filter_products(keyword) {
         this.$product_grid.find('.product-card').each(function() {
@@ -190,19 +196,35 @@ class MiniMartPOS {
     // --- Cart Logic ---
 
     add_to_cart(item) {
-        let existing = this.cart.find(i => i.item_code === item.item_code);
-        if (existing) {
-            existing.qty = flt(existing.qty) + 1;
-        } else {
-            this.cart.push({
-                item_code: item.item_code,
-                item_name: item.item_name,
-                price: flt(item.price),
-                qty: 1
-            });
-        }
-        this.render_cart();
+    // 1. Find the card in the grid to update the UI count
+    let $card = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"]`);
+    let $badge = $card.find('.stock-badge');
+    let current_stock = parseFloat($badge.text());
+
+    if (current_stock <= 0) {
+        frappe.show_alert({message: __('Out of stock!'), indicator: 'red'});
+        return;
     }
+
+    // 2. Add to cart logic
+    let existing = this.cart.find(i => i.item_code === item.item_code);
+    if (existing) {
+        existing.qty = flt(existing.qty) + 1;
+    } else {
+        this.cart.push({
+            item_code: item.item_code,
+            item_name: item.item_name,
+            price: flt(item.price),
+            qty: 1
+        });
+    }
+
+    // 3. Update the UI stock badge immediately (Live Effect)
+    $badge.text(current_stock - 1);
+    if (current_stock - 1 <= 0) $badge.css('background', '#e74c3c');
+
+    this.render_cart();
+}
 
     update_qty(index, delta) {
         let item = this.cart[index];

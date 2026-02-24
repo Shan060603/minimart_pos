@@ -31,7 +31,8 @@ def check_pos_opening():
         "pos_profile": profile.name,
         "company": profile.company,
         "customer": profile.customer,
-        "payment_methods": payment_methods
+        "payment_methods": payment_methods,
+        "warehouse": profile.warehouse
     }
 
 @frappe.whitelist()
@@ -58,21 +59,27 @@ def create_opening_entry(pos_profile, amount=0):
 
 @frappe.whitelist()
 def get_products():
-    """Fetches items for the visual grid based on the POS Profile Price List."""
+    """Fetches items with Live Stock based on the POS Profile Warehouse."""
     profile = get_assigned_pos_profile()
+    
+    # Using a clean SQL query to bypass any cached values in Frappe's ORM layer
     return frappe.db.sql("""
         SELECT 
-            i.name as item_code, i.item_name, i.image,
+            i.name as item_code, 
+            i.item_name, 
+            i.image,
             COALESCE((SELECT price_list_rate FROM `tabItem Price` 
-                      WHERE item_code = i.name AND price_list = %s LIMIT 1), 0) as price
+                      WHERE item_code = i.name AND price_list = %s LIMIT 1), 0) as price,
+            COALESCE((SELECT actual_qty FROM `tabBin` 
+                      WHERE item_code = i.name AND warehouse = %s LIMIT 1), 0) as actual_qty
         FROM `tabItem` i 
         WHERE i.disabled = 0 AND i.has_variants = 0 AND i.is_sales_item = 1
         ORDER BY i.item_name ASC LIMIT 100
-    """, (profile.selling_price_list,), as_dict=1)
+    """, (profile.selling_price_list, profile.warehouse), as_dict=1)
 
 @frappe.whitelist()
 def get_item_by_barcode(barcode):
-    """Searches for an item by barcode or Item Code and returns price/details."""
+    """Searches for an item with its current stock level."""
     item_code = frappe.db.get_value("Item Barcode", {"barcode": barcode}, "parent")
     
     if not item_code:
@@ -87,32 +94,37 @@ def get_item_by_barcode(barcode):
                 i.item_name, 
                 i.image,
                 COALESCE((SELECT price_list_rate FROM `tabItem Price` 
-                          WHERE item_code = i.name AND price_list = %s LIMIT 1), 0) as price
+                          WHERE item_code = i.name AND price_list = %s LIMIT 1), 0) as price,
+                COALESCE((SELECT actual_qty FROM `tabBin` 
+                          WHERE item_code = i.name AND warehouse = %s LIMIT 1), 0) as actual_qty
             FROM `tabItem` i 
             WHERE i.name = %s
-        """, (profile.selling_price_list, item_code), as_dict=1)
+        """, (profile.selling_price_list, profile.warehouse, item_code), as_dict=1)
 
         return item_data[0] if item_data else None
     return None
 
 @frappe.whitelist()
 def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
-    """Creates a POS Invoice. Qty is converted to flt to support decimals like 0.5."""
+    """Creates a POS Invoice and performs a synchronous Stock Ledger update."""
     profile = get_assigned_pos_profile()
-    opening_data = check_pos_opening()
     
-    if not opening_data.get("opening_entry"):
+    opening_entry = frappe.db.get_value("POS Opening Entry", 
+        {"pos_profile": profile.name, "user": frappe.session.user, "status": "Open", "docstatus": 1}, "name")
+    
+    if not opening_entry:
         frappe.throw(_("Please open a POS shift first."))
 
     selected_customer = customer or profile.customer or "Guest"
 
     invoice = frappe.new_doc("POS Invoice")
-    invoice.pos_opening_entry = opening_data["opening_entry"]
     invoice.pos_profile = profile.name
+    invoice.pos_opening_entry = opening_entry
     invoice.customer = selected_customer
     invoice.company = profile.company
-    invoice.update_stock = 1
+    invoice.update_stock = 1  # Crucial: Deducts stock from tabBin
     invoice.set_posting_time = 1
+    invoice.posting_date = now_datetime().date()
     
     items = json.loads(cart)
     for i in items:
@@ -120,19 +132,18 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
             "item_code": i.get("item_code"),
             "qty": flt(i.get("qty")), 
             "rate": flt(i.get("price")),
-            "warehouse": profile.warehouse
+            "warehouse": profile.warehouse,
+            "deliver_by_stock": 1 # Triggers Stock Ledger Entry on submission
         })
 
     invoice.set_missing_values()
     invoice.calculate_taxes_and_totals()
 
-    invoice.set("payments", [])
-    
     payment_account = frappe.db.get_value("Mode of Payment Account", 
         {"parent": mode_of_payment, "company": profile.company}, "default_account")
 
     if not payment_account:
-        frappe.throw(_("Account not found for {0}").format(mode_of_payment))
+        frappe.throw(_("Payment Account not found for {0}").format(mode_of_payment))
 
     invoice.append("payments", {
         "mode_of_payment": mode_of_payment,
@@ -140,36 +151,32 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
         "amount": flt(amount_paid) 
     })
 
+    # --- SYNCHRONOUS FLOW START ---
     invoice.insert()
-    invoice.submit()
+    invoice.submit() 
     
-    # Update the link to the opening entry
-    frappe.db.set_value("POS Invoice", invoice.name, "pos_opening_entry", opening_data["opening_entry"])
+    # CRITICAL: Force the database to commit the Stock Ledger Entry (SLE) 
+    # to the tabBin table immediately. Without this, the 'actual_qty' 
+    # might not be updated when the frontend calls get_products() a millisecond later.
+    frappe.db.commit() 
+    # --- SYNCHRONOUS FLOW END ---
     
     return invoice.name
 
-# --- RECENT ORDERS LOGIC ---
+# --- RECENT ORDERS & CLOSING ---
 
 @frappe.whitelist()
 def get_recent_invoices(opening_entry):
-    """Bypasses permissions to fetch invoices for the current shift list."""
     return frappe.db.get_list('POS Invoice',
-        filters={
-            'pos_opening_entry': opening_entry,
-            'docstatus': 1
-        },
+        filters={'pos_opening_entry': opening_entry, 'docstatus': 1},
         fields=['name', 'customer', 'grand_total', 'creation'],
         order_by='creation desc',
         limit=10
     )
 
-# --- IMPROVED CLOSING LOGIC ---
-
 @frappe.whitelist()
 def close_pos_shift(opening_entry):
-    """Closes shift and reconciles all POS Invoices."""
     opening_doc = frappe.get_doc("POS Opening Entry", opening_entry)
-    
     invoices = frappe.get_all("POS Invoice", 
         filters={"pos_opening_entry": opening_entry, "docstatus": 1},
         fields=["name", "grand_total", "net_total", "total_qty", "posting_date"]
@@ -193,8 +200,6 @@ def close_pos_shift(opening_entry):
             "posting_date": inv.posting_date
         })
 
-    opening_amounts = {d.mode_of_payment: d.opening_amount for d in opening_doc.balance_details}
-
     payment_data = frappe.db.sql("""
         SELECT p.mode_of_payment, SUM(p.amount - inv.change_amount) as total_amount
         FROM `tabSales Invoice Payment` p
@@ -203,21 +208,17 @@ def close_pos_shift(opening_entry):
         GROUP BY p.mode_of_payment
     """, (opening_entry), as_dict=1)
 
+    opening_amounts = {d.mode_of_payment: d.opening_amount for d in opening_doc.balance_details}
+
     for pay in payment_data:
         mop = pay.mode_of_payment
         opening_amt = flt(opening_amounts.get(mop, 0))
-        net_payment = flt(pay.total_amount)
-        
         closing_doc.append("payment_reconciliation", {
             "mode_of_payment": mop,
             "opening_amount": opening_amt,
-            "expected_amount": opening_amt + net_payment,
-            "closing_amount": opening_amt + net_payment
+            "expected_amount": opening_amt + flt(pay.total_amount),
+            "closing_amount": opening_amt + flt(pay.total_amount)
         })
-
-    closing_doc.grand_total = sum(inv.grand_total for inv in invoices)
-    closing_doc.net_total = sum(inv.net_total for inv in invoices)
-    closing_doc.total_quantity = sum(inv.total_qty for inv in invoices)
 
     closing_doc.insert()
     closing_doc.submit()
