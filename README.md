@@ -11,7 +11,7 @@ A lightweight, responsive, and barcode-ready Point of Sale (POS) system built as
 * **Financial Accuracy**: Correctly handles "Amount Paid" vs "Change" to ensure your ledgers balance.
 
 ## Note:
-* **Add POS Opening Entry Field in POS Invoice: pos_opening_entry
+* **Add POS Opening Entry Field in POS Invoice**: pos_opening_entry
 
 ---
 
