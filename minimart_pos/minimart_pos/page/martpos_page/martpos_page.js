@@ -54,7 +54,6 @@ function show_opening_dialog(profile) {
  * Initializes the POS UI and Class Instance
  */
 function render_pos_ui(page, shift_data) {
-    // Render the base HTML template
     $(frappe.render_template("martpos_page", {})).appendTo(page.main);
     
     window.pos_instance = new MiniMartPOS(page, shift_data);
@@ -63,7 +62,6 @@ function render_pos_ui(page, shift_data) {
     // --- PAGE ACTIONS ---
     page.set_primary_action(__('Open Drawer'), () => {
         window.pos_instance.trigger_cash_drawer();
-        frappe.show_alert({message: __('Opening Cash Drawer...'), indicator: 'green'});
     });
 
     page.add_menu_item(__('Close Shift'), () => {
@@ -86,7 +84,7 @@ class MiniMartPOS {
         
         // Selectors
         this.$scan_input = $('#barcode-scan');
-        this.$group_filter = $('#item-group-filter'); // New Group Filter
+        this.$group_filter = $('#item-group-filter');
         this.$cart_container = $('#cart-table');
         this.$total_display = $('#grand-total');
         this.$product_grid = $('#product-grid');
@@ -96,7 +94,7 @@ class MiniMartPOS {
     init() {
         this.setup_customer_control();
         this.bind_events();
-        this.load_item_groups(); // Load groups into dropdown
+        this.load_item_groups();
         this.load_products();
         this.load_recent_orders();
         this.focus_input();
@@ -133,7 +131,6 @@ class MiniMartPOS {
     }
 
     bind_events() {
-        // Barcode / Search Input
         this.$scan_input.on('keypress', (e) => {
             if (e.which == 13) {
                 let code = this.$scan_input.val().trim();
@@ -142,18 +139,15 @@ class MiniMartPOS {
             }
         });
 
-        // Trigger filter on text input
         this.$scan_input.on('input', () => {
             this.filter_products();
         });
 
-        // Trigger filter on group change
         this.$group_filter.on('change', () => {
             this.filter_products();
             this.focus_input();
         });
 
-        // Global click listener to refocus input
         $(document).on('click', (e) => {
             if (!$(e.target).closest('#barcode-scan, #item-group-filter, #customer-search-container, .awesomplete, .modal-dialog, .cart-qty-input').length) {
                 setTimeout(() => this.focus_input(), 1000);
@@ -163,18 +157,47 @@ class MiniMartPOS {
         $(document).on('click', '#checkout-btn', () => this.process_payment());
     }
 
+    /**
+     * Cross-Platform Cash Drawer Trigger (Linux/Windows)
+     */
     async trigger_cash_drawer() {
         try {
-            if (!("serial" in navigator)) return;
-            if (!this.serialPort) this.serialPort = await navigator.serial.requestPort();
-            await this.serialPort.open({ baudRate: 9600 });
+            if (!("serial" in navigator)) {
+                frappe.show_alert({message: __('Browser Serial API not supported'), indicator: 'orange'});
+                return;
+            }
+
+            // If we don't have a port, request one. 
+            // Passing an empty filters array helps show all USB-Serial devices.
+            if (!this.serialPort) {
+                this.serialPort = await navigator.serial.requestPort({ filters: [] });
+            }
+
+            // Check if already open; if not, open it
+            if (!this.serialPort.writable) {
+                await this.serialPort.open({ baudRate: 9600 });
+            }
+
             const writer = this.serialPort.writable.getWriter();
-            await writer.write(new Uint8Array([27, 112, 0, 25, 250])); 
+
+            // Pulse signals for both common pins (Adaptable for Linux/Windows drivers)
+            const pin2 = new Uint8Array([27, 112, 0, 25, 250]);
+            const pin5 = new Uint8Array([27, 112, 1, 25, 250]);
+            
+            await writer.write(pin2);
+            await writer.write(pin5);
+            
             writer.releaseLock();
-            await this.serialPort.close();
+            console.log("Drawer trigger sent to /dev/ttyUSB0");
+
         } catch (err) {
-            console.error("Serial Port Error:", err);
+            console.error("Hardware Error:", err);
+            // Reset so the user can re-try the selection popup if it failed
             this.serialPort = null;
+            
+            if (err.name === "SecurityError") {
+                frappe.msgprint(__("Security Error: Please restart your PC after running the usermod command."));
+            }
         }
     }
 
@@ -235,11 +258,11 @@ class MiniMartPOS {
             `;
         }).join('');
         this.$product_grid.html(html);
-        this.filter_products(); // Re-apply current filters after render
+        this.filter_products();
     }
 
     filter_products() {
-        let keyword = this.$scan_input.val().toLowerCase();
+        let keyword = this.$scan_input.val().toLowerCase().trim();
         let selected_group = this.$group_filter.val();
 
         this.$product_grid.find('.product-card').each(function() {
