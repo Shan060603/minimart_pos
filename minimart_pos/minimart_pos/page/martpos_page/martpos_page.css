@@ -360,15 +360,31 @@
 .order-id { font-weight: bold; color: var(--primary-color); }
 .order-total { font-weight: bold; }
 
+/* --- 🟢 STOCK STATUS COLORS --- */
+.stock-badge.bg-success {
+    background-color: #28a745 !important; /* Solid Green */
+}
+
+.stock-badge.bg-danger {
+    background-color: #dc3545 !important; /* Solid Red */
+}
+
+.stock-badge.bg-warning {
+    background-color: #ffc107 !important; /* Yellow for low stock */
+    color: #000 !important;
+}
+
+/* --- 🎨 IMPROVED BADGE DESIGN --- */
 .stock-badge {
     position: absolute;
-    top: 5px;
-    right: 5px;
-    padding: 2px 6px;
-    border-radius: 4px;
+    top: 8px;
+    right: 8px;
+    padding: 3px 8px;
+    border-radius: 6px; /* Slightly rounder for modern look */
     color: white;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: bold;
-    z-index: 1;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    z-index: 10;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    text-shadow: 1px 1px 1px rgba(0,0,0,0.1);
 }

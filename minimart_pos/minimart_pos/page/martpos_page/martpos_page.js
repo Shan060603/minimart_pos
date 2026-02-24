@@ -54,16 +54,27 @@ function show_opening_dialog(profile) {
  * Initializes the POS UI and Class Instance
  */
 function render_pos_ui(page, shift_data) {
+    // Render the base HTML template
     $(frappe.render_template("martpos_page", {})).appendTo(page.main);
     
     window.pos_instance = new MiniMartPOS(page, shift_data);
     window.pos_instance.init();
 
+    // --- PAGE ACTIONS (Updated) ---
+
+    // 1. Primary Action: Open Drawer (Replaced Sync Stock)
+    page.set_primary_action(__('Open Drawer'), () => {
+        window.pos_instance.trigger_cash_drawer();
+        frappe.show_alert({message: __('Opening Cash Drawer...'), indicator: 'green'});
+    });
+
+    // 2. Menu Item: Close Shift
     page.add_menu_item(__('Close Shift'), () => {
         window.pos_instance.close_shift();
     });
 
-    page.set_secondary_action(__('Sync Stock'), () => {
+    // 3. Menu Item: Sync Stock (Moved from primary button to menu)
+    page.add_menu_item(__('Sync Stock Levels'), () => {
         window.pos_instance.load_products();
         frappe.show_alert({message: __('Stock levels updated from server'), indicator: 'blue'});
     });
@@ -150,11 +161,18 @@ class MiniMartPOS {
 
     async trigger_cash_drawer() {
         try {
-            if (!("serial" in navigator)) return;
-            if (!this.serialPort) this.serialPort = await navigator.serial.requestPort();
+            // Web Serial API logic to send kick signal to printer
+            if (!("serial" in navigator)) {
+                console.warn("Web Serial not supported");
+                return;
+            }
+            if (!this.serialPort) {
+                this.serialPort = await navigator.serial.requestPort();
+            }
             await this.serialPort.open({ baudRate: 9600 });
             const writer = this.serialPort.writable.getWriter();
-            await writer.write(new Uint8Array([0x01])); 
+            // Standard ESC/POS command for cash drawer kick
+            await writer.write(new Uint8Array([27, 112, 0, 25, 250])); 
             writer.releaseLock();
             await this.serialPort.close();
         } catch (err) {
@@ -176,15 +194,19 @@ class MiniMartPOS {
     render_products(products) {
         let html = products.map(item => {
             const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
-            const stockColor = item.actual_qty > 5 ? '#27ae60' : (item.actual_qty > 0 ? '#f39c12' : '#e74c3c');
             
+            // Updated color logic to match your CSS classes
+            let badge_class = 'bg-success';
+            if (item.actual_qty <= 0) badge_class = 'bg-danger';
+            else if (item.actual_qty <= 5) badge_class = 'bg-warning';
+
             return `
                 <div class="product-card" 
                      data-item-code="${item.item_code.toLowerCase()}" 
                      data-item-name="${item.item_name.toLowerCase()}"
                      onclick="pos_instance.add_to_cart(${itemJSON})">
                     <div class="product-image">
-                        <span class="stock-badge" style="background: ${stockColor};">
+                        <span class="stock-badge ${badge_class}">
                             ${Math.floor(item.actual_qty)}
                         </span>
                         ${item.image ? `<img src="${item.image}">` : `<div class="img-placeholder">${item.item_name[0]}</div>`}
@@ -252,7 +274,12 @@ class MiniMartPOS {
         // Update UI Badge
         let new_stock = current_stock - 1;
         $badge.text(new_stock);
-        $badge.css('background', new_stock > 5 ? '#27ae60' : (new_stock > 0 ? '#f39c12' : '#e74c3c'));
+        
+        // Update Class for color to match your CSS
+        $badge.removeClass('bg-success bg-warning bg-danger');
+        if (new_stock <= 0) $badge.addClass('bg-danger');
+        else if (new_stock <= 5) $badge.addClass('bg-warning');
+        else $badge.addClass('bg-success');
 
         this.render_cart();
     }
@@ -273,7 +300,11 @@ class MiniMartPOS {
         // Restore/Deduct Badge
         let new_stock = current_stock - delta;
         $badge.text(new_stock);
-        $badge.css('background', new_stock > 5 ? '#27ae60' : (new_stock > 0 ? '#f39c12' : '#e74c3c'));
+        
+        $badge.removeClass('bg-success bg-warning bg-danger');
+        if (new_stock <= 0) $badge.addClass('bg-danger');
+        else if (new_stock <= 5) $badge.addClass('bg-warning');
+        else $badge.addClass('bg-success');
 
         if (item.qty <= 0) {
             this.remove_item(index, false);
@@ -301,7 +332,11 @@ class MiniMartPOS {
         item.qty = new_qty;
         let new_stock = current_stock - diff;
         $badge.text(new_stock);
-        $badge.css('background', new_stock > 5 ? '#27ae60' : (new_stock > 0 ? '#f39c12' : '#e74c3c'));
+        
+        $badge.removeClass('bg-success bg-warning bg-danger');
+        if (new_stock <= 0) $badge.addClass('bg-danger');
+        else if (new_stock <= 5) $badge.addClass('bg-warning');
+        else $badge.addClass('bg-success');
 
         if (item.qty <= 0) {
             this.remove_item(index, false);
@@ -344,7 +379,11 @@ class MiniMartPOS {
         if ($badge.length) {
             let restored_stock = parseFloat($badge.text()) + item.qty;
             $badge.text(restored_stock);
-            $badge.css('background', restored_stock > 5 ? '#27ae60' : (restored_stock > 0 ? '#f39c12' : '#e74c3c'));
+            
+            $badge.removeClass('bg-success bg-warning bg-danger');
+            if (restored_stock <= 0) $badge.addClass('bg-danger');
+            else if (restored_stock <= 5) $badge.addClass('bg-warning');
+            else $badge.addClass('bg-success');
         }
 
         this.cart.splice(index, 1);
@@ -399,7 +438,11 @@ class MiniMartPOS {
                             let $badge = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"] .stock-badge`);
                             if ($badge.length) {
                                 let restored = parseFloat($badge.text()) + item.qty;
-                                $badge.text(restored).css('background', restored > 5 ? '#27ae60' : (restored > 0 ? '#f39c12' : '#e74c3c'));
+                                $badge.text(restored);
+                                $badge.removeClass('bg-success bg-warning bg-danger');
+                                if (restored <= 0) $badge.addClass('bg-danger');
+                                else if (restored <= 5) $badge.addClass('bg-warning');
+                                else $badge.addClass('bg-success');
                             }
                         });
                         this.load_recent_orders();
@@ -494,7 +537,6 @@ class MiniMartPOS {
             }
         });
         d.show();
-        // Auto-select amount received for quick typing
         setTimeout(() => d.get_field('amount_received').$input.select(), 400);
     }
 
