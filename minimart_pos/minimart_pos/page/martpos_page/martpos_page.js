@@ -158,29 +158,24 @@ class MiniMartPOS {
     }
 
     /**
-     * Cross-Platform Cash Drawer Trigger (Linux/Windows)
+     * Cross-Platform Cash Drawer Trigger (Supports Brave/Chrome on Linux/Windows)
      */
     async trigger_cash_drawer() {
         try {
             if (!("serial" in navigator)) {
-                frappe.show_alert({message: __('Browser Serial API not supported'), indicator: 'orange'});
+                frappe.show_alert({message: __('Browser Serial API not supported. Use Native Brave and enable Insecure Origin flag.'), indicator: 'orange'});
                 return;
             }
 
-            // If we don't have a port, request one. 
-            // Passing an empty filters array helps show all USB-Serial devices.
             if (!this.serialPort) {
                 this.serialPort = await navigator.serial.requestPort({ filters: [] });
             }
 
-            // Check if already open; if not, open it
             if (!this.serialPort.writable) {
                 await this.serialPort.open({ baudRate: 9600 });
             }
 
             const writer = this.serialPort.writable.getWriter();
-
-            // Pulse signals for both common pins (Adaptable for Linux/Windows drivers)
             const pin2 = new Uint8Array([27, 112, 0, 25, 250]);
             const pin5 = new Uint8Array([27, 112, 1, 25, 250]);
             
@@ -188,15 +183,11 @@ class MiniMartPOS {
             await writer.write(pin5);
             
             writer.releaseLock();
-            console.log("Drawer trigger sent to /dev/ttyUSB0");
-
         } catch (err) {
             console.error("Hardware Error:", err);
-            // Reset so the user can re-try the selection popup if it failed
             this.serialPort = null;
-            
             if (err.name === "SecurityError") {
-                frappe.msgprint(__("Security Error: Please restart your PC after running the usermod command."));
+                frappe.msgprint(__("Security Error: Check group permissions (dialout) and restart."));
             }
         }
     }
@@ -230,19 +221,23 @@ class MiniMartPOS {
         });
     }
 
+    /**
+     * Renders products and skips 0-stock items
+     */
     render_products(products) {
         let html = products.map(item => {
+            // HIDE ITEM COMPLETELY IF NO STOCK
+            if (flt(item.actual_qty) <= 0) return '';
+
             const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
-            
-            let badge_class = 'bg-success';
-            if (item.actual_qty <= 0) badge_class = 'bg-danger';
-            else if (item.actual_qty <= 5) badge_class = 'bg-warning';
+            let badge_class = flt(item.actual_qty) <= 5 ? 'bg-warning' : 'bg-success';
 
             return `
                 <div class="product-card" 
                      data-item-code="${item.item_code.toLowerCase()}" 
                      data-item-name="${item.item_name.toLowerCase()}"
                      data-item-group="${item.item_group || ''}"
+                     data-actual-qty="${item.actual_qty}"
                      onclick="pos_instance.add_to_cart(${itemJSON})">
                     <div class="product-image">
                         <span class="stock-badge ${badge_class}">
@@ -269,11 +264,13 @@ class MiniMartPOS {
             let name = $(this).attr('data-item-name') || "";
             let code = $(this).attr('data-item-code') || "";
             let group = $(this).attr('data-item-group') || "";
+            let qty = flt($(this).attr('data-actual-qty'));
 
             let matches_search = name.includes(keyword) || code.includes(keyword);
             let matches_group = selected_group === "" || group === selected_group;
+            let has_stock = qty > 0;
 
-            if (matches_search && matches_group) $(this).show();
+            if (matches_search && matches_group && has_stock) $(this).show();
             else $(this).hide();
         });
     }
@@ -284,14 +281,17 @@ class MiniMartPOS {
             args: { barcode: barcode },
             callback: (r) => {
                 if (r.message) {
+                    if (flt(r.message.actual_qty) <= 0) {
+                        frappe.show_alert({message: __('Item out of stock'), indicator: 'red'});
+                        return;
+                    }
                     this.add_to_cart(r.message);
                     frappe.utils.play_sound("submit");
-                    this.$scan_input.val(''); 
-                    this.filter_products(); 
                 } else {
                     frappe.show_alert({message: __('Item not found'), indicator: 'red'});
                     frappe.utils.play_sound("error");
                 }
+                this.$scan_input.val('');
                 this.focus_input();
             }
         });
@@ -304,6 +304,7 @@ class MiniMartPOS {
 
         if (current_stock <= 0) {
             frappe.show_alert({message: __('Out of stock!'), indicator: 'red'});
+            $card.hide();
             return;
         }
 
@@ -321,11 +322,9 @@ class MiniMartPOS {
 
         let new_stock = current_stock - 1;
         $badge.text(new_stock);
+        $card.attr('data-actual-qty', new_stock);
         
-        $badge.removeClass('bg-success bg-warning bg-danger');
-        if (new_stock <= 0) $badge.addClass('bg-danger');
-        else if (new_stock <= 5) $badge.addClass('bg-warning');
-        else $badge.addClass('bg-success');
+        if (new_stock <= 0) $card.hide();
 
         this.render_cart();
     }
@@ -343,18 +342,16 @@ class MiniMartPOS {
 
         item.qty = flt(item.qty) + delta;
         let new_stock = current_stock - delta;
-        $badge.text(new_stock);
         
-        $badge.removeClass('bg-success bg-warning bg-danger');
-        if (new_stock <= 0) $badge.addClass('bg-danger');
-        else if (new_stock <= 5) $badge.addClass('bg-warning');
-        else $badge.addClass('bg-success');
-
-        if (item.qty <= 0) {
-            this.remove_item(index, false);
-        } else {
-            this.render_cart();
+        if ($badge.length) {
+            $badge.text(new_stock);
+            $card.attr('data-actual-qty', new_stock);
+            if (new_stock <= 0) $card.hide();
+            else $card.show();
         }
+
+        if (item.qty <= 0) this.remove_item(index, false);
+        else this.render_cart();
     }
 
     manual_qty_update(index, value) {
@@ -375,18 +372,16 @@ class MiniMartPOS {
 
         item.qty = new_qty;
         let new_stock = current_stock - diff;
-        $badge.text(new_stock);
         
-        $badge.removeClass('bg-success bg-warning bg-danger');
-        if (new_stock <= 0) $badge.addClass('bg-danger');
-        else if (new_stock <= 5) $badge.addClass('bg-warning');
-        else $badge.addClass('bg-success');
-
-        if (item.qty <= 0) {
-            this.remove_item(index, false);
-        } else {
-            this.render_cart();
+        if ($badge.length) {
+            $badge.text(new_stock);
+            $card.attr('data-actual-qty', new_stock);
+            if (new_stock <= 0) $card.hide();
+            else $card.show();
         }
+
+        if (item.qty <= 0) this.remove_item(index, false);
+        else this.render_cart();
     }
 
     render_cart() {
@@ -423,11 +418,8 @@ class MiniMartPOS {
         if ($badge.length) {
             let restored_stock = parseFloat($badge.text()) + item.qty;
             $badge.text(restored_stock);
-            
-            $badge.removeClass('bg-success bg-warning bg-danger');
-            if (restored_stock <= 0) $badge.addClass('bg-danger');
-            else if (restored_stock <= 5) $badge.addClass('bg-warning');
-            else $badge.addClass('bg-success');
+            $card.attr('data-actual-qty', restored_stock);
+            $card.show();
         }
 
         this.cart.splice(index, 1);
@@ -479,14 +471,13 @@ class MiniMartPOS {
                 callback: (r) => {
                     if (r.message) {
                         r.message.forEach(item => {
-                            let $badge = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"] .stock-badge`);
+                            let $card = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"]`);
+                            let $badge = $card.find('.stock-badge');
                             if ($badge.length) {
                                 let restored = parseFloat($badge.text()) + item.qty;
                                 $badge.text(restored);
-                                $badge.removeClass('bg-success bg-warning bg-danger');
-                                if (restored <= 0) $badge.addClass('bg-danger');
-                                else if (restored <= 5) $badge.addClass('bg-warning');
-                                else $badge.addClass('bg-success');
+                                $card.attr('data-actual-qty', restored);
+                                if (restored > 0) $card.show();
                             }
                         });
                         this.load_recent_orders();
