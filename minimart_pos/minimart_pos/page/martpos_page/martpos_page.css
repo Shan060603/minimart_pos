@@ -97,7 +97,6 @@ html, body {
     justify-content: space-between;
     position: relative;
     -webkit-touch-callout: none;
-    active-color: rgba(52, 152, 219, 0.1);
 }
 
 .product-card:hover {
