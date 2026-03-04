@@ -1,6 +1,6 @@
 /* --- 🛠️ BASE LAYOUT & AUTO-ADAPT --- */
 .pos-wrapper {
-    display: flex; /* Changed to flex for more reliable height locking */
+    display: flex; 
     height: calc(100vh - 60px); 
     background: #f4f7f9;
     overflow: hidden; 
@@ -23,11 +23,10 @@
     flex-shrink: 0;
 }
 
-/* 🏷️ ITEM GROUP & SEARCH (Your 2px Style) */
-#item-group-filter {
+/* 🏷️ ITEM GROUP & SEARCH (2px Style) */
+#item-group-filter, #barcode-scan {
     border: 2px solid #171717;
     border-radius: 10px;
-    padding: 0 15px;
     height: 52px;
     background-color: #f8f9fa;
     color: #171717;
@@ -38,17 +37,13 @@
     flex: 1;
     padding: 12px 20px;
     font-size: 1.1rem;
-    border: 2px solid #171717;
-    border-radius: 10px;
     outline: none;
-    height: 52px;
 }
 
-/* --- 🛍️ PRODUCT GRID (Optimized for Asus Screen) --- */
+/* --- 🛍️ PRODUCT GRID --- */
 .product-grid {
     flex: 1;
     display: grid;
-    /* Fits more items per row by setting min to 130px */
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
     gap: 12px;
     padding: 15px;
@@ -66,7 +61,7 @@
     transition: all 0.2s ease;
     display: flex;
     flex-direction: column;
-    height: 190px; /* Reduced height to fit more rows */
+    height: 190px; 
     justify-content: space-between;
     position: relative;
 }
@@ -91,7 +86,7 @@
 
 /* --- 🛒 SIDEBAR STYLING --- */
 .pos-sidebar {
-    width: 380px; /* Fixed width prevents squishing */
+    width: 380px; 
     background: white;
     border-left: 1px solid #d1d8dd;
     display: flex;
@@ -101,14 +96,7 @@
     flex-shrink: 0;
 }
 
-.customer-section { 
-    padding: 12px; 
-    background: #f8f9fa; 
-    border-bottom: 1px solid #eee;
-    flex-shrink: 0;
-}
-
-/* --- 📋 CART CONTENT (Alignment Fix) --- */
+/* --- 📋 CART CONTENT --- */
 .cart-items { 
     flex: 1;
     overflow-y: auto;
@@ -117,7 +105,6 @@
 
 .cart-row {
     display: grid;
-    /* Columns: Name | Controls | Price | Remove */
     grid-template-columns: 1fr auto 75px 30px;
     align-items: center;
     gap: 8px;
@@ -125,42 +112,13 @@
     border-bottom: 1px solid #f1f1f1;
 }
 
-.item-name {
-    font-weight: 600;
-    font-size: 13px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.qty-controls {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-
 .cart-qty-input {
-    width: 40px !important;
+    width: 45px !important;
     text-align: center;
-    height: 28px;
-    border: 1px solid #d1d8dd;
-    border-radius: 4px;
-}
-
-.btn-qty {
-    border: none;
-    background: #f0f2f5;
+    height: 30px;
+    border: 2px solid #d1d8dd;
+    border-radius: 6px;
     font-weight: bold;
-    width: 24px;
-    height: 24px;
-    border-radius: 4px;
-    cursor: pointer;
-}
-
-.item-total {
-    font-weight: 700;
-    text-align: right;
-    font-size: 13px;
 }
 
 /* --- 💰 FOOTER & CHECKOUT --- */
@@ -171,73 +129,150 @@
     flex-shrink: 0;
 }
 
-.total-display {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    font-size: 1.5rem;
-    font-weight: 800;
-    margin-bottom: 10px;
-    color: #2c3e50;
-}
-
 #checkout-btn {
     width: 100%;
-    padding: 16px;
+    padding: 18px;
     background: #27ae60;
     color: white;
-    font-size: 1.1rem;
-    font-weight: bold;
+    font-size: 1.2rem;
+    font-weight: 800;
     border: none;
-    border-radius: 10px;
+    border-radius: 12px;
     cursor: pointer;
     text-transform: uppercase;
+    box-shadow: 0 4px 0 #1e8449;
+}
+
+#checkout-btn:active {
+    transform: translateY(2px);
+    box-shadow: 0 2px 0 #1e8449;
+}
+
+/* --- 🧮 PAYMENT MODAL & NUMPAD --- */
+.modal-dialog { max-width: 850px !important; }
+
+/* Fix for unclickable buttons: Ensure modal content allows interaction */
+.payment-modal-container {
+    position: relative;
+    z-index: 1;
+    pointer-events: auto !important;
+}
+
+.numpad-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+}
+
+.num-btn, .quick-btn, .mop-btn, .disc-btn {
+    cursor: pointer !important;
+    pointer-events: auto !important; /* Force clickability */
+    user-select: none;
+}
+
+.num-btn {
+    height: 70px;
+    font-size: 1.8rem;
+    font-weight: 800;
+    border: 2px solid #171717;
+    background: #fff;
+    border-radius: 12px;
+    transition: all 0.1s;
+}
+
+.num-btn:active { 
+    background: #171717; 
+    color: #fff;
+    transform: scale(0.95);
+}
+
+.mop-btn {
+    font-weight: 800;
+    border: 2px solid #171717;
+    height: 50px;
+    letter-spacing: 1px;
+}
+
+.mop-btn.active {
+    background: #171717 !important;
+    color: white !important;
+}
+
+.quick-cash-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.quick-btn {
+    height: 55px;
+    font-weight: 800;
+    background: #3498db !important;
+    border: none;
+    color: white !important;
+    border-radius: 8px;
+}
+
+/* --- 💚 CHANGE DISPLAY (Matrix High Contrast) --- */
+.change-display-box {
+    background: #000 !important;
+    border-radius: 12px;
+    margin-top: 15px;
+    border: 3px solid #333;
+    padding: 15px;
+}
+
+.change-amount {
+    font-size: 3rem;
+    font-weight: 900;
+    line-height: 1;
+    color: #00ff00;
+    text-shadow: 0 0 10px rgba(0, 255, 0, 0.4);
 }
 
 /* --- 📱 MOBILE AUTO-ADAPT --- */
 @media (max-width: 992px) {
-    .pos-wrapper {
-        flex-direction: column;
-        height: 100vh;
-        overflow-y: auto;
-    }
-    .pos-sidebar {
-        width: 100%;
-        border-left: none;
-        border-top: 2px solid #d1d8dd;
-        height: auto;
-    }
-    .pos-body {
-        height: 50vh;
-        flex: none;
-    }
-    .product-grid {
-        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-    }
+    .pos-wrapper { flex-direction: column; height: 100vh; overflow-y: auto; }
+    .pos-sidebar { width: 100%; border-left: none; border-top: 2px solid #d1d8dd; height: auto; }
+    .pos-body { height: 50vh; flex: none; }
 }
 
 /* --- 🟢 STOCK BADGES --- */
 .stock-badge {
     position: absolute;
-    top: 5px;
-    right: 5px;
-    padding: 2px 6px;
-    border-radius: 5px;
-    color: white;
-    font-size: 10px;
-    font-weight: bold;
-    z-index: 5;
+    top: 5px; right: 5px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    color: white; font-size: 11px; font-weight: 800; z-index: 5;
+}
+.stock-badge.bg-success { background-color: #28a745 !important; }
+.stock-badge.bg-warning { background-color: #f39c12 !important; color: #fff !important; }
+
+/* --- 🕒 RECENT ORDERS --- */
+.recent-orders-wrapper {
+    max-height: 200px;
+    overflow-y: auto;
+    background: #f8f9fa;
+    border-top: 2px solid #d1d8dd;
+    padding: 10px;
 }
 
-.stock-badge.bg-success { background-color: #28a745 !important; }
-.stock-badge.bg-danger { background-color: #dc3545 !important; }
-.stock-badge.bg-warning { background-color: #ffc107 !important; color: #000 !important; }
+.recent-order-item {
+    background: white;
+    border: 1px solid #eee;
+    padding: 8px;
+    margin-bottom: 5px;
+    border-radius: 6px;
+}
 
-.recent-orders-wrapper {
-    border-top: 1px solid #d1d8dd;
-    padding: 10px;
-    background: #f8f9fa;
-    flex-shrink: 0;
-    max-height: 150px;
-    overflow-y: auto;
+/* --- ⚠️ VALIDATION SHAKE --- */
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
+}
+
+.shake-error {
+    animation: shake 0.2s ease-in-out 0s 2;
+    border: 2px solid #e74c3c !important;
 }
