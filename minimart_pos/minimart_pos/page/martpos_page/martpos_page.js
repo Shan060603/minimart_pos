@@ -43,10 +43,6 @@ function render_pos_ui(page, shift_data) {
 
     page.set_primary_action(__('Open Drawer'), () => window.pos_instance.trigger_cash_drawer());
     page.add_menu_item(__('Close Shift'), () => window.pos_instance.close_shift());
-    page.add_menu_item(__('Sync Stock'), () => {
-        window.pos_instance.load_products();
-        frappe.show_alert({message: __('Stock levels updated'), indicator: 'blue'});
-    });
 }
 
 class MiniMartPOS {
@@ -437,7 +433,6 @@ class MiniMartPOS {
                     callback: (r) => {
                         me.trigger_cash_drawer();
                         d.hide();
-                        me.print_receipt(r.message, [...me.cart], me.current_payment_total, received, received - me.current_payment_total, selected_mop);
                         me.cart = [];
                         me.render_cart();
                         me.load_recent_orders();
