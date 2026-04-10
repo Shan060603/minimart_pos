@@ -111,7 +111,7 @@ def get_item_by_barcode(barcode):
     return None
 
 @frappe.whitelist()
-def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
+def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0, total_payable=None):
     """Creates a POS Invoice with clean reconciliation for Closing Entries."""
     profile = get_assigned_pos_profile()
     
@@ -138,17 +138,31 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0):
 
     items = json.loads(cart)
     for i in items:
+        item_price = flt(i.get("price"))
+        discount_pct = flt(i.get("discount_pct"))
+        discount_amount = flt(item_price * (discount_pct / 100.0))
+        discounted_rate = item_price - discount_amount
+
         invoice.append("items", {
             "item_code": i.get("item_code"),
             "qty": flt(i.get("qty")), 
-            "rate": flt(i.get("price")),
+            "rate": discounted_rate,
+            "discount_percentage": discount_pct,
+            "discount_amount": discount_amount,
             "warehouse": profile.warehouse,
-            "price_list_rate": flt(i.get("price")),
+            "price_list_rate": item_price,
             "allow_negative_stock": 1
         })
 
     invoice.set_missing_values()
     invoice.calculate_taxes_and_totals()
+
+    if total_payable is not None:
+        total_payable = flt(total_payable)
+        if total_payable and flt(invoice.grand_total) != total_payable:
+            invoice.apply_discount_on = "Grand Total"
+            invoice.discount_amount = flt(invoice.grand_total - total_payable)
+            invoice.calculate_taxes_and_totals()
 
     total_to_pay = flt(invoice.grand_total)
     paid = flt(amount_paid)

@@ -230,11 +230,82 @@ class MiniMartPOS {
             $card.hide();
             return;
         }
-        let existing = this.cart.find(i => i.item_code === item.item_code);
-        if (existing) existing.qty += 1;
-        else this.cart.push({ item_code: item.item_code, item_name: item.item_name, price: flt(item.price), qty: 1 });
+
+        // Keep discounted lines separate from newly added items.
+        let existing = this.cart.find(i => i.item_code === item.item_code && flt(i.discount_pct || 0) === 0);
+        if (existing) {
+            existing.qty += 1;
+        } else {
+            this.cart.push({ item_code: item.item_code, item_name: item.item_name, price: flt(item.price), discount_pct: 0, qty: 1 });
+        }
+
         this.sync_grid_stock(item.item_code, -1);
         this.render_cart();
+    }
+
+    update_item_discount(index, value) {
+        let item = this.cart[index];
+        let discount_pct = Math.max(0, Math.min(100, flt(value)));
+        if (discount_pct > 100) {
+            discount_pct = 100;
+            frappe.show_alert({ message: __('Discount cannot exceed 100%'), indicator: 'orange' });
+        }
+        item.discount_pct = discount_pct;
+        this.render_cart();
+    }
+
+    open_item_discount_modal(index) {
+        let me = this;
+        let item = this.cart[index];
+        const basePrice = flt(item.price);
+        const updatePreview = (value) => {
+            let discount_pct = Math.max(0, Math.min(100, flt(value)));
+            let discountedPrice = basePrice * (1 - (discount_pct / 100));
+            discountedPrice = discountedPrice < 0 ? 0 : discountedPrice;
+            let savedAmount = basePrice - discountedPrice;
+            d.fields_dict.discount_preview.$wrapper.html(
+                `<div class="discount-modal-summary">
+                    <div><strong>${__('Original Price')}:</strong> ₱${basePrice.toFixed(2)}</div>
+                    <div><strong>${__('Discount')}:</strong> ${discount_pct.toFixed(0)}%</div>
+                    <div><strong>${__('Discounted Price')}:</strong> ₱${discountedPrice.toFixed(2)}</div>
+                    <div><strong>${__('You Save')}:</strong> ₱${savedAmount.toFixed(2)}</div>
+                </div>`
+            );
+        };
+
+        let d = new frappe.ui.Dialog({
+            title: __('Item Discount'),
+            fields: [
+                {
+                    fieldtype: 'Float',
+                    fieldname: 'discount_pct',
+                    label: __('Discount %'),
+                    default: flt(item.discount_pct || 0),
+                    description: __('Enter discount percentage for this item'),
+                    reqd: 1
+                },
+                {
+                    fieldtype: 'HTML',
+                    fieldname: 'discount_preview',
+                    options: ''
+                }
+            ],
+            primary_action_label: __('Apply'),
+            primary_action(values) {
+                let discount_pct = Math.max(0, Math.min(100, flt(values.discount_pct)));
+                item.discount_pct = discount_pct;
+                me.render_cart();
+                d.hide();
+            }
+        });
+
+        d.on_page_show = () => {
+            const $input = d.fields_dict.discount_pct.input ? d.fields_dict.discount_pct.input : d.fields_dict.discount_pct.$input;
+            updatePreview($input.val());
+            $input.on('input', (e) => updatePreview($(e.target).val()));
+        };
+
+        d.show();
     }
 
     sync_grid_stock(item_code, change) {
@@ -275,7 +346,12 @@ class MiniMartPOS {
     }
 
     render_cart() {
-        let html = this.cart.map((item, index) => `
+        let html = this.cart.map((item, index) => {
+            let discount_pct = flt(item.discount_pct || 0);
+            let linePrice = flt(item.price) * (1 - (discount_pct / 100));
+            if (linePrice < 0) linePrice = 0;
+            let lineTotal = (item.qty * linePrice).toFixed(2);
+            return `
             <div class="cart-row">
                 <div class="item-name">${item.item_name}</div>
                 <div class="qty-controls">
@@ -283,10 +359,15 @@ class MiniMartPOS {
                     <input type="number" class="cart-qty-input" value="${item.qty}" onchange="pos_instance.manual_qty_update(${index}, this.value)">
                     <button onclick="pos_instance.update_qty(${index}, 1)" class="btn-qty">+</button>
                 </div>
-                <div class="item-total">₱${(item.qty * item.price).toFixed(2)}</div>
+                <div class="discount-input-wrapper">
+                    <button type="button" class="discount-btn" onclick="pos_instance.open_item_discount_modal(${index})">
+                        ${flt(item.discount_pct || 0).toFixed(0)}% <i class="fa fa-percent"></i>
+                    </button>
+                </div>
+                <div class="item-total">₱${lineTotal}</div>
                 <button onclick="pos_instance.remove_item(${index})" class="btn-remove">×</button>
             </div>
-        `).join('');
+        `}).join('');
         $('#cart-count').text(`${this.cart.length} Items`);
         this.$cart_container.html(this.cart.length ? html : `<div class="empty-cart-msg">${__('No items in cart')}</div>`);
         this.update_total();
@@ -301,7 +382,12 @@ class MiniMartPOS {
     }
 
     update_total() {
-        let total = this.cart.reduce((sum, i) => sum + (i.qty * i.price), 0);
+        let total = this.cart.reduce((sum, i) => {
+            let discount_pct = flt(i.discount_pct || 0);
+            let linePrice = flt(i.price) * (1 - (discount_pct / 100));
+            if (linePrice < 0) linePrice = 0;
+            return sum + (i.qty * linePrice);
+        }, 0);
         this.$total_display.text(total.toFixed(2));
     }
 
@@ -531,88 +617,6 @@ class MiniMartPOS {
         $wrapper.find('#modal-change-val').text('₱' + (change >= 0 ? change.toFixed(2) : '0.00'));
         $wrapper.find('#modal-change-val').css('color', change >= 0 ? '#00ff00' : '#ff4d4d');
         $wrapper.find('#modal-payable-total').text('₱' + this.current_payment_total.toFixed(2));
-    }
-
-    print_receipt(name, cart, total, paid, change, payment_method) {
-        // building a richer receipt template
-        let print_window = window.open('', 'PRINT', 'height=600,width=400');
-        let now = new Date();
-        let dateStr = now.toLocaleDateString();
-        let timeStr = now.toLocaleTimeString();
-        let invoice_no = name.split('-').pop();
-        let cashier = this.shift_data.cashier || '';
-        let customer = (this.customer_control && this.customer_control.get_value()) || '';
-
-        let itemsRows = cart.map(i => `
-            <tr>
-                <td>${i.item_name}</td>
-                <td align="center">${i.qty}</td>
-                <td align="right">₱${i.price.toFixed(2)}</td>
-                <td align="right">₱${(i.qty * i.price).toFixed(2)}</td>
-            </tr>
-        `).join('');
-
-        let receipt_html = `
-            <html>
-            <head>
-                <style>
-                    /* target narrow thermal printers (80mm) */
-                    body {
-                        font-family: monospace;
-                        font-size: 10px;
-                        width: 80mm;
-                        margin: 0;
-                    }
-                    @media print {
-                        body { width: 80mm; }
-                        .no-print { display: none; }
-                    }
-                    table { width: 100%; border-collapse: collapse; }
-                    th, td { padding: 2px; word-wrap: break-word; }
-                    .total-row { font-weight: bold; }
-                    .center { text-align: center; }
-                    h3 { margin: 0; font-size: 14px; }
-                </style>
-            </head>
-            <body onload="window.print(); window.close();">
-                <div class="center">
-                    <h3>${this.shift_data.company}</h3>
-                    <div>RECEIPT #: ${invoice_no}</div>
-                    <div>${dateStr} ${timeStr}</div>
-                    ${cashier ? `<div>Cashier: ${cashier}</div>` : ''}
-                    ${customer ? `<div>Customer: ${customer}</div>` : ''}
-                </div>
-                <hr>
-                <table>
-                    <thead>
-                        <tr>
-                            <th style="text-align:left;">Item</th>
-                            <th style="text-align:center;">Qty</th>
-                            <th style="text-align:right;">Price</th>
-                            <th style="text-align:right;">Total</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${itemsRows}
-                    </tbody>
-                </table>
-                <hr>
-                <div style="display:flex; justify-content:space-between;">
-                    <div>SUBTOTAL</div><div>₱${total.toFixed(2)}</div>
-                </div>
-                <div style="display:flex; justify-content:space-between;">
-                    <div>PAID (${payment_method || 'Cash'})</div><div>₱${paid.toFixed(2)}</div>
-                </div>
-                <div style="display:flex; justify-content:space-between;">
-                    <div>CHANGE</div><div>₱${change.toFixed(2)}</div>
-                </div>
-                <hr>
-                <div class="center">Thank you for your purchase!</div>
-            </body>
-            </html>
-        `;
-        print_window.document.write(receipt_html);
-        print_window.document.close();
     }
 
     void_transaction(invoice_name) {
