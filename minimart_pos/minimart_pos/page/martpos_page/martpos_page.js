@@ -110,13 +110,18 @@ class MiniMartPOS {
     }
 
     bind_events() {
-        this.$scan_input.on('keypress', (e) => {
-            if (e.which == 13) {
+        const handleBarcodeScan = (e) => {
+            if (e.key === 'Enter' || e.which == 13) {
                 let code = this.$scan_input.val().trim();
                 if (code) this.fetch_item(code);
                 this.$scan_input.val('');
+                this.filter_products();
+                e.preventDefault();
             }
-        });
+        };
+
+        this.$scan_input.on('keypress', handleBarcodeScan);
+        this.$scan_input.on('keydown', handleBarcodeScan);
 
         this.$scan_input.on('input', () => this.filter_products());
         this.$group_filter.on('change', () => { this.filter_products(); this.focus_input(); });
@@ -423,8 +428,25 @@ class MiniMartPOS {
         let me = this;
         const original_total = flt(this.$total_display.text());
         this.current_payment_total = original_total;
-        
-        if (!this.cart.length) return;
+
+        const customer = this.customer_control ? this.customer_control.get_value() : null;
+        if (!this.cart.length) {
+            frappe.msgprint({
+                title: __('Cart Empty'),
+                indicator: 'red',
+                message: __('Please add items to the cart before checkout.')
+            });
+            return;
+        }
+
+        if (!customer) {
+            frappe.msgprint({
+                title: __('Missing Customer'),
+                indicator: 'red',
+                message: __('Please select a customer or choose Guest before checkout.')
+            });
+            return;
+        }
 
         let d = new frappe.ui.Dialog({
             title: __('Finalize Payment'),
