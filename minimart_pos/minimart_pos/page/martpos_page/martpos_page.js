@@ -171,19 +171,25 @@ class MiniMartPOS {
         let html = products.map(item => {
             if (flt(item.actual_qty) <= 0) return '';
             const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
-            let badge_class = flt(item.actual_qty) <= 5 ? 'bg-warning' : 'bg-success';
+            let conversion = flt(item.conversion_factor) || 1;
+            let display_qty = conversion ? (flt(item.actual_qty) / conversion) : flt(item.actual_qty);
+            let badge_class = display_qty <= 5 ? 'bg-warning' : 'bg-success';
             return `
-                <div class="product-card" 
-                     data-item-code="${item.item_code.toLowerCase()}" 
-                     data-item-name="${item.item_name.toLowerCase()}"
-                     data-item-group="${item.item_group || ''}"
-                     data-actual-qty="${item.actual_qty}"
-                     onclick="pos_instance.add_to_cart(${itemJSON})">
-                    <span class="stock-badge ${badge_class}">${Math.floor(item.actual_qty)}</span>
+                <div class="product-card"
+                      data-item-code="${item.item_code.toLowerCase()}"
+                      data-item-uom="${(item.uom || '').toLowerCase()}"
+                      data-item-name="${item.item_name.toLowerCase()}"
+                      data-item-group="${item.item_group || ''}"
+                      data-base-actual-qty="${item.actual_qty}"
+                      data-actual-qty="${display_qty}"
+                      data-display-conversion="${conversion}"
+                      onclick="pos_instance.add_to_cart(${itemJSON})">
+                    <span class="stock-badge ${badge_class}">${this.format_stock_qty(display_qty, conversion)}</span>
                     <div class="product-image">
                         ${item.image ? `<img src="${item.image}">` : `<div class="img-placeholder">${item.item_name[0]}</div>`}
                     </div>
                     <div class="product-name">${item.item_name}</div>
+                    <div class="product-uom">${item.uom || ''}</div>
                     <div class="product-price">₱${flt(item.price).toFixed(2)}</div>
                 </div>
             `;
@@ -227,21 +233,48 @@ class MiniMartPOS {
         });
     }
 
-    add_to_cart(item) {
-        let $card = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"]`);
-        let current_stock = flt($card.attr('data-actual-qty'));
-        if (current_stock <= 0) {
+    async add_to_cart(item) {
+        let $card = this.get_product_card(item.item_code, item.uom);
+        let base_stock = flt($card.attr('data-base-actual-qty'));
+        let current_displayed_stock = flt($card.attr('data-actual-qty'));
+        if (current_displayed_stock <= 0) {
             frappe.show_alert({message: __('Out of stock!'), indicator: 'red'});
             $card.hide();
             return;
         }
 
-        // Keep discounted lines separate from newly added items.
-        let existing = this.cart.find(i => i.item_code === item.item_code && flt(i.discount_pct || 0) === 0);
+        // UOM/price cache per item_code
+        if (!this.uom_cache) this.uom_cache = {};
+        if (!this.uom_cache[item.item_code]) {
+            // Fetch UOMs/prices from backend
+            let uoms = await new Promise(resolve => {
+                frappe.call({
+                    method: "minimart_pos.api.get_item_uoms_and_prices",
+                    args: { item_code: item.item_code },
+                    callback: r => resolve(r.message || [])
+                });
+            });
+            this.uom_cache[item.item_code] = uoms;
+        }
+        let uoms = this.uom_cache[item.item_code];
+        let default_uom = uoms.find(u => u.uom === item.uom) || uoms.find(u => u.is_stock_uom) || uoms[0];
+        let conversion = flt(default_uom.conversion_factor);
+
+        // Keep discounted lines separate from newly added items, now also by UOM
+        let existing = this.cart.find(i => i.item_code === item.item_code && flt(i.discount_pct || 0) === 0 && i.uom === (default_uom && default_uom.uom));
         if (existing) {
             existing.qty += 1;
         } else {
-            this.cart.push({ item_code: item.item_code, item_name: item.item_name, price: flt(item.price), discount_pct: 0, qty: 1 });
+            this.cart.push({
+                item_code: item.item_code,
+                item_name: item.item_name,
+                price: flt(default_uom.price),
+                discount_pct: 0,
+                qty: 1,
+                uom: default_uom.uom,
+                uoms: uoms // cache UOMs for selector
+            });
+            this.update_card_stock_display(item.item_code, conversion, default_uom.uom);
         }
 
         this.sync_grid_stock(item.item_code, -1);
@@ -314,20 +347,74 @@ class MiniMartPOS {
     }
 
     sync_grid_stock(item_code, change) {
-        let $card = $(`.product-card[data-item-code="${item_code.toLowerCase()}"]`);
+        let $cards = this.get_product_cards(item_code);
+        if (!$cards.length) return;
+        $cards.each((_, card) => {
+            let $card = $(card);
+            let display_conversion = flt($card.attr('data-display-conversion')) || 1;
+            let display_uom = $card.attr('data-item-uom');
+            this.update_card_stock_display(item_code, display_conversion, display_uom);
+        });
+    }
+
+    get_reserved_stock_qty(item_code) {
+        return this.cart.reduce((total, cart_item) => {
+            if (cart_item.item_code !== item_code) return total;
+            let uom_row = (cart_item.uoms || []).find(u => u.uom === cart_item.uom);
+            let conversion = flt(uom_row && uom_row.conversion_factor) || 1;
+            return total + (flt(cart_item.qty) * conversion);
+        }, 0);
+    }
+
+    get_product_cards(item_code) {
+        return this.$product_grid.find(`.product-card[data-item-code="${item_code.toLowerCase()}"]`);
+    }
+
+    get_product_card(item_code, uom=null) {
+        let $cards = this.get_product_cards(item_code);
+        if (!uom) return $cards.first();
+        let $card = $cards.filter(`[data-item-uom="${String(uom).toLowerCase()}"]`).first();
+        return $card.length ? $card : $cards.first();
+    }
+
+    update_card_stock_display(item_code, display_conversion=1, display_uom=null) {
+        let $card = this.get_product_card(item_code, display_uom);
         if (!$card.length) return;
-        let new_stock = flt($card.attr('data-actual-qty')) + change;
-        $card.attr('data-actual-qty', new_stock);
-        $card.find('.stock-badge').text(Math.floor(new_stock));
-        if (new_stock <= 0) $card.hide();
+
+        let base_stock = flt($card.attr('data-base-actual-qty'));
+        let reserved_stock = this.get_reserved_stock_qty(item_code);
+        let remaining_stock = Math.max(0, base_stock - reserved_stock);
+        let displayed_stock = display_conversion ? (remaining_stock / display_conversion) : remaining_stock;
+
+        $card.attr('data-display-conversion', display_conversion);
+        $card.attr('data-actual-qty', displayed_stock);
+        $card.find('.stock-badge').text(this.format_stock_qty(displayed_stock, display_conversion));
+
+        let badge_class = displayed_stock <= 5 ? 'bg-warning' : 'bg-success';
+        $card.find('.stock-badge').removeClass('bg-warning bg-success').addClass(badge_class);
+
+        if (displayed_stock <= 0) $card.hide();
         else $card.show();
+    }
+
+    format_stock_qty(quantity, conversion=1) {
+        let value = flt(quantity);
+        if (conversion <= 1) {
+            return String(Math.floor(value));
+        }
+
+        if (Number.isInteger(value)) {
+            return String(value);
+        }
+
+        return value.toFixed(2).replace(/\.?0+$/, '');
     }
 
     update_qty(index, delta) {
         let item = this.cart[index];
-        let $card = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"]`);
-        let current_stock = flt($card.attr('data-actual-qty'));
-        if (delta > 0 && current_stock <= 0) return;
+        let $card = this.get_product_card(item.item_code, item.uom);
+        let current_displayed_stock = flt($card.attr('data-actual-qty'));
+        if (delta > 0 && current_displayed_stock <= 0) return;
         item.qty = flt(item.qty) + delta;
         this.sync_grid_stock(item.item_code, -delta);
         if (item.qty <= 0) this.cart.splice(index, 1);
@@ -337,9 +424,9 @@ class MiniMartPOS {
     manual_qty_update(index, value) {
         let item = this.cart[index];
         let diff = flt(value) - item.qty;
-        let $card = $(`.product-card[data-item-code="${item.item_code.toLowerCase()}"]`);
-        let current_stock = flt($card.attr('data-actual-qty'));
-        if (diff > current_stock) {
+        let $card = this.get_product_card(item.item_code, item.uom);
+        let current_displayed_stock = flt($card.attr('data-actual-qty'));
+        if (diff > current_displayed_stock) {
             frappe.show_alert({message: __('Insufficient Stock'), indicator: 'orange'});
             this.render_cart();
             return;
@@ -356,26 +443,64 @@ class MiniMartPOS {
             let linePrice = flt(item.price) * (1 - (discount_pct / 100));
             if (linePrice < 0) linePrice = 0;
             let lineTotal = (item.qty * linePrice).toFixed(2);
+            // UOM selector dropdown
+            let uom_selector = '';
+            if (item.uoms && item.uoms.length > 1) {
+                uom_selector = `<select class="cart-uom-select" data-index="${index}">
+                    ${item.uoms.map(u => `<option value="${u.uom}" ${u.uom === item.uom ? 'selected' : ''}>${u.uom}</option>`).join('')}
+                </select>`;
+            } else if (item.uoms && item.uoms.length === 1) {
+                uom_selector = `<span class="cart-uom-label">${item.uoms[0].uom}</span>`;
+            }
             return `
             <div class="cart-row">
-                <div class="item-name">${item.item_name}</div>
-                <div class="qty-controls">
-                    <button onclick="pos_instance.update_qty(${index}, -1)" class="btn-qty">-</button>
-                    <input type="number" class="cart-qty-input" value="${item.qty}" onchange="pos_instance.manual_qty_update(${index}, this.value)">
-                    <button onclick="pos_instance.update_qty(${index}, 1)" class="btn-qty">+</button>
+                <div class="cart-item-name">${item.item_name}</div>
+                <div class="cart-item-line cart-item-line-controls">
+                    <div class="qty-controls">
+                        <button onclick="pos_instance.update_qty(${index}, -1)" class="btn-qty">-</button>
+                        <input type="number" class="cart-qty-input" value="${item.qty}" onchange="pos_instance.manual_qty_update(${index}, this.value)">
+                        <button onclick="pos_instance.update_qty(${index}, 1)" class="btn-qty">+</button>
+                    </div>
+                    <div class="uom-selector-wrapper">${uom_selector}</div>
+                    <div class="discount-input-wrapper">
+                        <button type="button" class="discount-btn" onclick="pos_instance.open_item_discount_modal(${index})">
+                            ${flt(item.discount_pct || 0).toFixed(0)}% <i class="fa fa-percent"></i>
+                        </button>
+                    </div>
                 </div>
-                <div class="discount-input-wrapper">
-                    <button type="button" class="discount-btn" onclick="pos_instance.open_item_discount_modal(${index})">
-                        ${flt(item.discount_pct || 0).toFixed(0)}% <i class="fa fa-percent"></i>
-                    </button>
+                <div class="cart-item-line cart-item-line-summary">
+                    <div class="item-total">
+                        <span class="item-total-label">${__('Total')}</span>
+                        <span class="item-total-value">₱${lineTotal}</span>
+                    </div>
+                    <button onclick="pos_instance.remove_item(${index})" class="btn-remove">×</button>
                 </div>
-                <div class="item-total">₱${lineTotal}</div>
-                <button onclick="pos_instance.remove_item(${index})" class="btn-remove">×</button>
             </div>
         `}).join('');
         $('#cart-count').text(`${this.cart.length} Items`);
         this.$cart_container.html(this.cart.length ? html : `<div class="empty-cart-msg">${__('No items in cart')}</div>`);
+        // Bind UOM change events
+        this.$cart_container.find('.cart-uom-select').off('change').on('change', (e) => {
+            let idx = $(e.target).data('index');
+            let new_uom = $(e.target).val();
+            this.change_cart_item_uom(idx, new_uom);
+        });
         this.update_total();
+    }
+
+    change_cart_item_uom(index, new_uom) {
+        let item = this.cart[index];
+        if (!item || !item.uoms) return;
+        let uom_row = item.uoms.find(u => u.uom === new_uom);
+        if (!uom_row) return;
+        item.uom = uom_row.uom;
+        item.price = flt(uom_row.price);
+        let conversion = flt(uom_row.conversion_factor);
+        this.update_card_stock_display(item.item_code, conversion, item.uom);
+        this.sync_grid_stock(item.item_code, 0);
+        // Optionally, reset discount on UOM change
+        // item.discount_pct = 0;
+        this.render_cart();
     }
 
     remove_item(index) {
@@ -528,10 +653,18 @@ class MiniMartPOS {
                     return;
                 }
                 
+                // Prepare cart for submission: only send required fields
+                let cart_payload = me.cart.map(i => ({
+                    item_code: i.item_code,
+                    qty: i.qty,
+                    uom: i.uom,
+                    price: i.price,
+                    discount_pct: i.discount_pct
+                }));
                 frappe.call({
                     method: "minimart_pos.api.create_invoice",
                     args: { 
-                        cart: JSON.stringify(me.cart), 
+                        cart: JSON.stringify(cart_payload), 
                         customer: customer, 
                         mode_of_payment: selected_mop, 
                         amount_paid: received,

@@ -1,3 +1,23 @@
+/* --- UOM Selector in Cart --- */
+.uom-selector-wrapper {
+    display: flex;
+    align-items: center;
+    margin: 0 8px;
+}
+.cart-uom-select {
+    min-width: 60px;
+    padding: 2px 6px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: #fff;
+    font-size: 0.95rem;
+    margin-left: 2px;
+}
+.cart-uom-label {
+    font-size: 0.95rem;
+    color: #555;
+    margin-left: 2px;
+}
 /* --- 🛠️ BASE LAYOUT & AUTO-ADAPT --- */
 :root {
     --primary-color: #27ae60;
@@ -118,6 +138,14 @@ html, body {
     color: #171717;
 }
 
+.product-uom {
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #6c757d;
+}
+
 .product-price {
     font-size: 1rem;
     font-weight: 700;
@@ -185,19 +213,34 @@ html, body {
 }
 
 .cart-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(70px, auto) 70px 30px;
-    align-items: center;
+    display: flex;
+    flex-direction: column;
     gap: 8px;
-    padding: 10px 5px;
+    padding: 12px 6px;
     border-bottom: 1px solid #f1f1f1;
 }
 
-.item-name {
+.cart-item-name {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-weight: 700;
+    line-height: 1.25;
+    color: #171717;
+    word-break: break-word;
+}
+
+.cart-item-line {
+    display: grid;
+    gap: 8px;
+    align-items: center;
+}
+
+.cart-item-line-controls {
+    grid-template-columns: auto minmax(72px, auto) 70px;
+    justify-content: start;
+}
+
+.cart-item-line-summary {
+    grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .qty-controls {
@@ -206,11 +249,14 @@ html, body {
     align-items: center;
 }
 
+.uom-selector-wrapper {
+    min-width: 0;
+}
+
 .discount-input-wrapper {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 4px;
+    align-items: center;
+    justify-content: center;
 }
 
 .discount-btn {
@@ -268,6 +314,29 @@ html, body {
     min-width: 30px;
     height: 30px;
     transition: all 0.1s ease;
+}
+
+.item-total {
+    justify-self: end;
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 6px;
+    text-align: right;
+    min-width: 0;
+}
+
+.item-total-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #6c757d;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.item-total-value {
+    font-weight: 700;
+    color: #171717;
 }
 
 .btn-qty:hover, .btn-remove:hover {
