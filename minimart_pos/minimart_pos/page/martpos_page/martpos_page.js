@@ -416,8 +416,12 @@ class MiniMartPOS {
         let current_displayed_stock = flt($card.attr('data-actual-qty'));
         if (delta > 0 && current_displayed_stock <= 0) return;
         item.qty = flt(item.qty) + delta;
-        this.sync_grid_stock(item.item_code, -delta);
-        if (item.qty <= 0) this.cart.splice(index, 1);
+        if (item.qty <= 0) {
+            this.cart.splice(index, 1);
+            this.sync_grid_stock(item.item_code, 0);
+        } else {
+            this.sync_grid_stock(item.item_code, -delta);
+        }
         this.render_cart();
     }
 
@@ -432,8 +436,12 @@ class MiniMartPOS {
             return;
         }
         item.qty = flt(value);
-        this.sync_grid_stock(item.item_code, -diff);
-        if (item.qty <= 0) this.cart.splice(index, 1);
+        if (item.qty <= 0) {
+            this.cart.splice(index, 1);
+            this.sync_grid_stock(item.item_code, 0);
+        } else {
+            this.sync_grid_stock(item.item_code, -diff);
+        }
         this.render_cart();
     }
 
@@ -505,8 +513,8 @@ class MiniMartPOS {
 
     remove_item(index) {
         let item = this.cart[index];
-        this.sync_grid_stock(item.item_code, item.qty);
         this.cart.splice(index, 1);
+        this.sync_grid_stock(item.item_code, 0);
         this.render_cart();
         this.focus_input();
     }
