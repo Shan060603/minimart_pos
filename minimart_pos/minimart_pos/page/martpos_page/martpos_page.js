@@ -212,25 +212,44 @@ class MiniMartPOS {
         });
     }
 
-    fetch_item(barcode) {
+    fetch_item(query) {
         frappe.call({
             method: "minimart_pos.api.get_item_by_barcode",
-            args: { barcode: barcode },
+            args: { barcode: query },
             callback: (r) => {
                 if (r.message) {
-                    if (flt(r.message.actual_qty) <= 0) {
-                        frappe.show_alert({message: __('Out of stock'), indicator: 'red'});
-                    } else {
-                        this.add_to_cart(r.message);
-                        frappe.utils.play_sound("submit");
-                    }
+                    this.handle_fetched_item(r.message);
+                } else {
+                    this.search_item(query);
+                }
+            }
+        });
+    }
+
+    search_item(query) {
+        frappe.call({
+            method: "minimart_pos.api.search_item",
+            args: { query: query },
+            callback: (r) => {
+                if (r.message) {
+                    this.handle_fetched_item(r.message);
                 } else {
                     frappe.show_alert({message: __('Not found'), indicator: 'red'});
                     frappe.utils.play_sound("error");
+                    this.focus_input();
                 }
-                this.focus_input();
             }
         });
+    }
+
+    handle_fetched_item(item) {
+        if (flt(item.actual_qty) <= 0) {
+            frappe.show_alert({message: __('Out of stock'), indicator: 'red'});
+        } else {
+            this.add_to_cart(item);
+            frappe.utils.play_sound("submit");
+        }
+        this.focus_input();
     }
 
     async add_to_cart(item) {

@@ -145,7 +145,6 @@ def get_products():
 	"""Fetches items with Live Stock and Item Group."""
 	profile = get_assigned_pos_profile()
 
-	# ADDED: i.item_group to the SELECT statement
 	return frappe.db.sql(
 		"""
         SELECT 
@@ -167,8 +166,8 @@ def get_products():
         WHERE i.disabled = 0 
           AND i.has_variants = 0 
           AND i.is_sales_item = 1
+          AND COALESCE(b.actual_qty, 0) > 0
         ORDER BY i.item_name ASC, conversion_factor ASC
-        LIMIT 100
     """,
 		(profile.selling_price_list, profile.warehouse),
 		as_dict=1,
@@ -207,6 +206,66 @@ def get_item_by_barcode(barcode):
 
 		return item_data[0] if item_data else None
 	return None
+
+
+@frappe.whitelist()
+def search_item(query):
+	"""Find the first in-stock POS item by exact code or partial name/code match."""
+	query = (query or "").strip()
+	if not query:
+		return None
+
+	profile = get_assigned_pos_profile()
+	like_query = f"%{query}%"
+
+	items = frappe.db.sql(
+		"""
+		SELECT
+			i.name as item_code,
+			i.item_name,
+			i.image,
+			i.item_group,
+			COALESCE(ip.uom, i.stock_uom) as uom,
+			CASE
+				WHEN COALESCE(ip.uom, i.stock_uom) = i.stock_uom THEN 1
+				ELSE COALESCE(iu.conversion_factor, 1)
+			END as conversion_factor,
+			COALESCE(ip.price_list_rate, 0) as price,
+			COALESCE(b.actual_qty, 0) as actual_qty
+		FROM `tabItem` i
+		LEFT JOIN `tabItem Price` ip ON ip.item_code = i.name AND ip.price_list = %s
+		LEFT JOIN `tabUOM Conversion Detail` iu ON iu.parent = i.name AND iu.uom = ip.uom
+		LEFT JOIN `tabBin` b ON b.item_code = i.name AND b.warehouse = %s
+		WHERE i.disabled = 0
+		  AND i.has_variants = 0
+		  AND i.is_sales_item = 1
+		  AND COALESCE(b.actual_qty, 0) > 0
+		  AND (i.name = %s OR i.name LIKE %s OR i.item_name LIKE %s)
+		ORDER BY
+			CASE
+				WHEN i.name = %s THEN 0
+				WHEN i.item_name = %s THEN 1
+				WHEN i.name LIKE %s THEN 2
+				ELSE 3
+			END,
+			i.item_name ASC,
+			conversion_factor ASC
+		LIMIT 1
+		""",
+		(
+			profile.selling_price_list,
+			profile.warehouse,
+			query,
+			like_query,
+			like_query,
+			query,
+			query,
+			like_query,
+		),
+		as_dict=1,
+	)
+
+	return items[0] if items else None
 
 
 @frappe.whitelist()
