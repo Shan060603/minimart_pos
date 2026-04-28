@@ -65,6 +65,7 @@ class MiniMartPOS {
         this.$total_display = $('#grand-total');
         this.$product_grid = $('#product-grid');
         this.$recent_orders_list = $('#recent-orders-list');
+        this.$clear_cart_btn = $('#clear-cart-btn');
     }
 
     init() {
@@ -133,6 +134,8 @@ class MiniMartPOS {
         });
 
         $(document).on('click', '#checkout-btn', () => this.process_payment());
+
+        this.$clear_cart_btn.on('click', () => this.clear_cart());
     }
 
     async trigger_cash_drawer() {
@@ -548,6 +551,15 @@ class MiniMartPOS {
         this.$total_display.text(total.toFixed(2));
     }
 
+    clear_cart() {
+        if (this.cart.length === 0) return;
+        if (!confirm(__('Are you sure you want to clear the entire cart?'))) return;
+        this.cart = [];
+        this.render_cart();
+        this.load_products(); // Refresh stock from server
+        this.focus_input();
+    }
+
     load_recent_orders() {
         frappe.call({
             method: "minimart_pos.api.get_recent_invoices", 
@@ -616,8 +628,8 @@ class MiniMartPOS {
                         <div class="row">
                             <div class="col-md-6 border-right">
                                 <label class="small font-weight-bold">AMOUNT RECEIVED</label>
-                                <input type="number" id="numpad-input" class="form-control form-control-lg text-right font-weight-bold mb-3" 
-                                    style="font-size: 2.5rem; height: 70px; border: 2px solid #171717;" value="${original_total}">
+                                <input type="number" id="numpad-input" class="form-control form-control-lg text-right font-weight-bold mb-3"
+                                    style="font-size: 2.5rem; height: 70px; border: 2px solid #171717;" value="">
                                 
                                 <div class="numpad-grid">
                                     ${[1, 2, 3, 4, 5, 6, 7, 8, 9, 0, '.', 'C'].map(val => 
@@ -729,6 +741,7 @@ class MiniMartPOS {
             }
         };
 
+        this.$payment_dialog = d;
         d.show();
     }
 
@@ -787,7 +800,15 @@ class MiniMartPOS {
 
         // Keyboard Typing
         $input.on('input keyup', () => me.update_payment_ui());
-        
+
+        // Enter key to submit
+        $input.on('keypress', function(e) {
+            if (e.which == 13) { // Enter key
+                e.preventDefault();
+                me.$payment_dialog.primary_action({});
+            }
+        });
+
         me.update_payment_ui();
     }
 

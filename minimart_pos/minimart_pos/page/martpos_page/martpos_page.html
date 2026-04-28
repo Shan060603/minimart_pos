@@ -1,7 +1,7 @@
 <div class="pos-wrapper">
     <input type="text" id="barcode-scan-hidden" style="position: absolute; opacity: 0; pointer-events: none;">
 
-    <div class="pos-body">
+    <div class="pos-items">
         <div class="scanner-container">
             <div class="d-flex gap-2">
                 <select id="item-group-filter" class="form-control" style="width: 140px; font-weight: bold; border: 2px solid #171717; border-radius: 8px;">
@@ -17,6 +17,20 @@
         </div>
     </div>
 
+    <div class="pos-cart">
+        <div class="cart-header d-flex justify-content-between align-items-center">
+            <h3 class="m-0">Current Sale</h3>
+            <div class="d-flex align-items-center gap-2">
+                <span class="item-count-badge" id="cart-count">0 Items</span>
+                <button id="clear-cart-btn" class="btn btn-xs btn-outline-danger" title="Clear Cart">Clear</button>
+            </div>
+        </div>
+
+        <div id="cart-table" class="cart-items">
+            <div class="empty-cart-msg">No items in cart</div>
+        </div>
+    </div>
+
     <div class="pos-sidebar">
         <div class="customer-section">
             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -25,13 +39,12 @@
             <div id="customer-search-container"></div> 
         </div>
 
-        <div class="cart-header d-flex justify-content-between align-items-center">
-            <h3 class="m-0">Current Sale</h3>
-            <span class="item-count-badge" id="cart-count">0 Items</span>
-        </div>
-        
-        <div id="cart-table" class="cart-items">
-            <div class="empty-cart-msg">No items in cart</div>
+        <div class="cart-footer">
+            <div class="total-display">
+                <span class="total-label">TOTAL</span>
+                <span class="total-amount">₱<span id="grand-total">0.00</span></span>
+            </div>
+            <button id="checkout-btn">PROCEED TO CHECKOUT</button>
         </div>
 
         <div class="recent-orders-wrapper">
@@ -42,14 +55,6 @@
                 </button>
             </div>
             <div id="recent-orders-list" class="recent-orders-list"></div>
-        </div>
-
-        <div class="cart-footer">
-            <div class="total-display">
-                <span class="total-label">TOTAL</span>
-                <span class="total-amount">₱<span id="grand-total">0.00</span></span>
-            </div>
-            <button id="checkout-btn">PROCEED TO CHECKOUT</button>
         </div>
     </div>
 </div>
