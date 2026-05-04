@@ -138,7 +138,7 @@ html, body {
     background: white;
     border: 1px solid #d1d8dd;
     border-radius: 12px;
-    padding: 8px;
+    padding: 28px 8px 8px;
     text-align: center;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -160,6 +160,25 @@ html, body {
 .product-card:active {
     transform: translateY(0px) scale(0.98);
     box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+
+.bundle-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #fff3cd;
+    color: #8a5200;
+    border: 1px solid #f1c46a;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    line-height: 1.2;
 }
 
 .product-name {

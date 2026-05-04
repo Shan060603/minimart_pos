@@ -2,6 +2,7 @@ import json
 
 import frappe
 from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import make_closing_entry_from_opening
+from erpnext.accounts.doctype.pos_invoice.pos_invoice import get_stock_availability
 from erpnext.stock.stock_ledger import NegativeStockError
 from frappe import _
 from frappe.utils import flt, now_datetime
@@ -50,38 +51,152 @@ def get_assigned_pos_profile():
 	return frappe.get_doc("POS Profile", profile_name)
 
 
+def is_active_product_bundle(item_code):
+	return bool(frappe.db.exists("Product Bundle", {"name": item_code, "disabled": 0}))
+
+
+def get_bundle_components(item_code, warehouse=None):
+	if not is_active_product_bundle(item_code):
+		return []
+
+	components = frappe.get_all(
+		"Product Bundle Item",
+		filters={"parent": item_code},
+		fields=["item_code", "qty"],
+		order_by="idx asc",
+	)
+
+	component_rows = []
+	for row in components:
+		if not frappe.db.get_value("Item", row.item_code, "is_stock_item"):
+			continue
+
+		component = {"item_code": row.item_code, "qty": flt(row.qty)}
+		if warehouse:
+			component["available_qty"] = get_available_qty(row.item_code, warehouse)
+		component_rows.append(component)
+
+	return component_rows
+
+
+def get_available_qty(item_code, warehouse):
+	availability, is_stock_item, _ = get_stock_availability(item_code, warehouse)
+	if not is_stock_item:
+		return 0
+	return flt(availability)
+
+
+def enrich_pos_item(row, warehouse):
+	row = dict(row)
+	row["bundle_components"] = get_bundle_components(row["item_code"], warehouse=warehouse)
+	row["is_product_bundle"] = 1 if row["bundle_components"] else 0
+	row["actual_qty"] = get_available_qty(row["item_code"], warehouse)
+	return row
+
+
+def get_catalog_rows(profile, item_code=None, search_term=None):
+	conditions = [
+		"i.disabled = 0",
+		"i.has_variants = 0",
+		"i.is_sales_item = 1",
+		"(i.is_stock_item = 1 OR EXISTS (SELECT 1 FROM `tabProduct Bundle` pb WHERE pb.name = i.name AND pb.disabled = 0))",
+	]
+	values = [profile.selling_price_list]
+
+	if item_code:
+		conditions.append("i.name = %s")
+		values.append(item_code)
+
+	if search_term:
+		like_query = f"%{search_term}%"
+		conditions.append("(i.name = %s OR i.name LIKE %s OR i.item_name LIKE %s)")
+		values.extend([search_term, like_query, like_query])
+
+	order_by = "i.item_name ASC, conversion_factor ASC"
+	if search_term:
+		like_query = f"%{search_term}%"
+		values.extend([search_term, search_term, like_query])
+		order_by = """
+			CASE
+				WHEN i.name = %s THEN 0
+				WHEN i.item_name = %s THEN 1
+				WHEN i.name LIKE %s THEN 2
+				ELSE 3
+			END,
+			i.item_name ASC,
+			conversion_factor ASC
+		"""
+
+	return frappe.db.sql(
+		f"""
+		SELECT
+			i.name as item_code,
+			i.item_name,
+			i.image,
+			i.item_group,
+			COALESCE(ip.uom, i.stock_uom) as uom,
+			CASE
+				WHEN COALESCE(ip.uom, i.stock_uom) = i.stock_uom THEN 1
+				ELSE COALESCE(iu.conversion_factor, 1)
+			END as conversion_factor,
+			COALESCE(ip.price_list_rate, 0) as price
+		FROM `tabItem` i
+		LEFT JOIN `tabItem Price` ip ON ip.item_code = i.name AND ip.price_list = %s
+		LEFT JOIN `tabUOM Conversion Detail` iu ON iu.parent = i.name AND iu.uom = ip.uom
+		WHERE {" AND ".join(conditions)}
+		ORDER BY {order_by}
+		""",
+		values,
+		as_dict=1,
+	)
+
+
 def validate_shift_stock(opening_entry):
 	"""Fail early with a clean message if closing the shift would create negative stock."""
-	stock_rows = frappe.db.sql(
+	sold_rows = frappe.db.sql(
 		"""
 		SELECT
 			item.item_code,
 			item.warehouse,
-			SUM(item.stock_qty) AS required_qty
+			SUM(item.stock_qty) AS sold_qty
 		FROM `tabPOS Invoice Item` item
 		INNER JOIN `tabPOS Invoice` invoice ON invoice.name = item.parent
 		WHERE invoice.pos_opening_entry = %s
 			AND invoice.docstatus = 1
 			AND IFNULL(item.warehouse, '') != ''
 		GROUP BY item.item_code, item.warehouse
-		HAVING required_qty > 0
+		HAVING sold_qty > 0
 		""",
 		(opening_entry,),
 		as_dict=1,
 	)
 
-	for row in stock_rows:
-		actual_qty = flt(
-			frappe.db.get_value("Bin", {"item_code": row.item_code, "warehouse": row.warehouse}, "actual_qty")
-		)
-		required_qty = flt(row.required_qty)
+	required_stock = {}
+	bundle_cache = {}
+
+	for row in sold_rows:
+		item_code = row.item_code
+		warehouse = row.warehouse
+		sold_qty = flt(row.sold_qty)
+
+		if is_active_product_bundle(item_code):
+			components = bundle_cache.setdefault(item_code, get_bundle_components(item_code))
+			for component in components:
+				key = (component["item_code"], warehouse)
+				required_stock[key] = required_stock.get(key, 0) + (flt(component["qty"]) * sold_qty)
+		else:
+			key = (item_code, warehouse)
+			required_stock[key] = required_stock.get(key, 0) + sold_qty
+
+	for (item_code, warehouse), required_qty in required_stock.items():
+		actual_qty = flt(frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty"))
 
 		if actual_qty < required_qty:
 			frappe.throw(
 				_("{0} needs {1} units in warehouse {2}, but only {3} are available for POS closing.").format(
-					frappe.bold(row.item_code),
+					frappe.bold(item_code),
 					frappe.bold(required_qty),
-					frappe.bold(row.warehouse),
+					frappe.bold(warehouse),
 					frappe.bold(actual_qty),
 				),
 				NegativeStockError,
@@ -142,36 +257,10 @@ def create_opening_entry(pos_profile, amount=0):
 
 @frappe.whitelist()
 def get_products():
-	"""Fetches items with Live Stock and Item Group."""
+	"""Fetches saleable POS items, including product bundles with computed availability."""
 	profile = get_assigned_pos_profile()
-
-	return frappe.db.sql(
-		"""
-        SELECT 
-            i.name as item_code, 
-            i.item_name, 
-            i.image,
-            i.item_group,
-            COALESCE(ip.uom, i.stock_uom) as uom,
-            CASE
-                WHEN COALESCE(ip.uom, i.stock_uom) = i.stock_uom THEN 1
-                ELSE COALESCE(iu.conversion_factor, 1)
-            END as conversion_factor,
-            COALESCE(ip.price_list_rate, 0) as price,
-            COALESCE(b.actual_qty, 0) as actual_qty
-        FROM `tabItem` i 
-        LEFT JOIN `tabItem Price` ip ON ip.item_code = i.name AND ip.price_list = %s
-        LEFT JOIN `tabUOM Conversion Detail` iu ON iu.parent = i.name AND iu.uom = ip.uom
-        LEFT JOIN `tabBin` b ON b.item_code = i.name AND b.warehouse = %s
-        WHERE i.disabled = 0 
-          AND i.has_variants = 0 
-          AND i.is_sales_item = 1
-          AND COALESCE(b.actual_qty, 0) > 0
-        ORDER BY i.item_name ASC, conversion_factor ASC
-    """,
-		(profile.selling_price_list, profile.warehouse),
-		as_dict=1,
-	)
+	rows = get_catalog_rows(profile)
+	return [row for row in (enrich_pos_item(row, profile.warehouse) for row in rows) if flt(row["actual_qty"]) > 0]
 
 
 @frappe.whitelist()
@@ -185,26 +274,12 @@ def get_item_by_barcode(barcode):
 
 	if item_code:
 		profile = get_assigned_pos_profile()
-		# ADDED: i.item_group to the SELECT statement
-		item_data = frappe.db.sql(
-			"""
-            SELECT 
-                i.name as item_code, 
-                i.item_name, 
-                i.image,
-                i.item_group,
-                COALESCE((SELECT price_list_rate FROM `tabItem Price` 
-                          WHERE item_code = i.name AND price_list = %s LIMIT 1), 0) as price,
-                COALESCE((SELECT actual_qty FROM `tabBin` 
-                          WHERE item_code = i.name AND warehouse = %s LIMIT 1), 0) as actual_qty
-            FROM `tabItem` i 
-            WHERE i.name = %s
-        """,
-			(profile.selling_price_list, profile.warehouse, item_code),
-			as_dict=1,
-		)
+		item_data = get_catalog_rows(profile, item_code=item_code)
+		if not item_data:
+			return None
 
-		return item_data[0] if item_data else None
+		item = enrich_pos_item(item_data[0], profile.warehouse)
+		return item if flt(item["actual_qty"]) > 0 else None
 	return None
 
 
@@ -216,56 +291,12 @@ def search_item(query):
 		return None
 
 	profile = get_assigned_pos_profile()
-	like_query = f"%{query}%"
-
-	items = frappe.db.sql(
-		"""
-		SELECT
-			i.name as item_code,
-			i.item_name,
-			i.image,
-			i.item_group,
-			COALESCE(ip.uom, i.stock_uom) as uom,
-			CASE
-				WHEN COALESCE(ip.uom, i.stock_uom) = i.stock_uom THEN 1
-				ELSE COALESCE(iu.conversion_factor, 1)
-			END as conversion_factor,
-			COALESCE(ip.price_list_rate, 0) as price,
-			COALESCE(b.actual_qty, 0) as actual_qty
-		FROM `tabItem` i
-		LEFT JOIN `tabItem Price` ip ON ip.item_code = i.name AND ip.price_list = %s
-		LEFT JOIN `tabUOM Conversion Detail` iu ON iu.parent = i.name AND iu.uom = ip.uom
-		LEFT JOIN `tabBin` b ON b.item_code = i.name AND b.warehouse = %s
-		WHERE i.disabled = 0
-		  AND i.has_variants = 0
-		  AND i.is_sales_item = 1
-		  AND COALESCE(b.actual_qty, 0) > 0
-		  AND (i.name = %s OR i.name LIKE %s OR i.item_name LIKE %s)
-		ORDER BY
-			CASE
-				WHEN i.name = %s THEN 0
-				WHEN i.item_name = %s THEN 1
-				WHEN i.name LIKE %s THEN 2
-				ELSE 3
-			END,
-			i.item_name ASC,
-			conversion_factor ASC
-		LIMIT 1
-		""",
-		(
-			profile.selling_price_list,
-			profile.warehouse,
-			query,
-			like_query,
-			like_query,
-			query,
-			query,
-			like_query,
-		),
-		as_dict=1,
-	)
-
-	return items[0] if items else None
+	items = get_catalog_rows(profile, search_term=query)
+	for row in items:
+		item = enrich_pos_item(row, profile.warehouse)
+		if flt(item["actual_qty"]) > 0:
+			return item
+	return None
 
 
 @frappe.whitelist()

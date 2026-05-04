@@ -174,6 +174,8 @@ class MiniMartPOS {
         let html = products.map(item => {
             if (flt(item.actual_qty) <= 0) return '';
             const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
+            const bundleComponents = encodeURIComponent(JSON.stringify(item.bundle_components || []));
+            const bundleLabel = item.is_product_bundle ? `<span class="bundle-badge">${__('Bundle')}</span>` : '';
             let conversion = flt(item.conversion_factor) || 1;
             let display_qty = conversion ? (flt(item.actual_qty) / conversion) : flt(item.actual_qty);
             let badge_class = display_qty <= 5 ? 'bg-warning' : 'bg-success';
@@ -186,7 +188,9 @@ class MiniMartPOS {
                       data-base-actual-qty="${item.actual_qty}"
                       data-actual-qty="${display_qty}"
                       data-display-conversion="${conversion}"
+                      data-bundle-components="${bundleComponents}"
                       onclick="pos_instance.add_to_cart(${itemJSON})">
+                    ${bundleLabel}
                     <span class="stock-badge ${badge_class}">${this.format_stock_qty(display_qty, conversion)}</span>
                     <div class="product-image">
                         ${item.image ? `<img src="${item.image}">` : `<div class="img-placeholder">${item.item_name[0]}</div>`}
@@ -257,7 +261,6 @@ class MiniMartPOS {
 
     async add_to_cart(item) {
         let $card = this.get_product_card(item.item_code, item.uom);
-        let base_stock = flt($card.attr('data-base-actual-qty'));
         let current_displayed_stock = flt($card.attr('data-actual-qty'));
         if (current_displayed_stock <= 0) {
             frappe.show_alert({message: __('Out of stock!'), indicator: 'red'});
@@ -280,7 +283,6 @@ class MiniMartPOS {
         }
         let uoms = this.uom_cache[item.item_code];
         let default_uom = uoms.find(u => u.uom === item.uom) || uoms.find(u => u.is_stock_uom) || uoms[0];
-        let conversion = flt(default_uom.conversion_factor);
 
         // Keep discounted lines separate from newly added items, now also by UOM
         let existing = this.cart.find(i => i.item_code === item.item_code && flt(i.discount_pct || 0) === 0 && i.uom === (default_uom && default_uom.uom));
@@ -294,12 +296,12 @@ class MiniMartPOS {
                 discount_pct: 0,
                 qty: 1,
                 uom: default_uom.uom,
+                bundle_components: item.bundle_components || [],
                 uoms: uoms // cache UOMs for selector
             });
-            this.update_card_stock_display(item.item_code, conversion, default_uom.uom);
         }
 
-        this.sync_grid_stock(item.item_code, -1);
+        this.sync_grid_stock();
         this.render_cart();
     }
 
@@ -368,23 +370,30 @@ class MiniMartPOS {
         d.show();
     }
 
-    sync_grid_stock(item_code, change) {
-        let $cards = this.get_product_cards(item_code);
-        if (!$cards.length) return;
-        $cards.each((_, card) => {
-            let $card = $(card);
-            let display_conversion = flt($card.attr('data-display-conversion')) || 1;
-            let display_uom = $card.attr('data-item-uom');
-            this.update_card_stock_display(item_code, display_conversion, display_uom);
-        });
+    sync_grid_stock() {
+        this.refresh_all_card_stock_displays();
+    }
+
+    get_cart_item_stock_units(cart_item) {
+        let uom_row = (cart_item.uoms || []).find(u => u.uom === cart_item.uom);
+        let conversion = flt(uom_row && uom_row.conversion_factor) || 1;
+        return flt(cart_item.qty) * conversion;
     }
 
     get_reserved_stock_qty(item_code) {
         return this.cart.reduce((total, cart_item) => {
-            if (cart_item.item_code !== item_code) return total;
-            let uom_row = (cart_item.uoms || []).find(u => u.uom === cart_item.uom);
-            let conversion = flt(uom_row && uom_row.conversion_factor) || 1;
-            return total + (flt(cart_item.qty) * conversion);
+            let stock_units = this.get_cart_item_stock_units(cart_item);
+            if (cart_item.item_code === item_code) {
+                total += stock_units;
+            }
+
+            (cart_item.bundle_components || []).forEach(component => {
+                if (component.item_code === item_code) {
+                    total += stock_units * flt(component.qty);
+                }
+            });
+
+            return total;
         }, 0);
     }
 
@@ -399,13 +408,62 @@ class MiniMartPOS {
         return $card.length ? $card : $cards.first();
     }
 
+    get_bundle_components_from_card($card) {
+        let encoded = $card.attr('data-bundle-components');
+        if (!encoded) return [];
+
+        try {
+            return JSON.parse(decodeURIComponent(encoded));
+        } catch (e) {
+            console.error('Failed to parse bundle components', e);
+            return [];
+        }
+    }
+
+    get_base_stock_qty(item_code) {
+        let $card = this.get_product_card(item_code);
+        return $card.length ? flt($card.attr('data-base-actual-qty')) : 0;
+    }
+
+    get_remaining_bundle_qty(bundle_components) {
+        if (!bundle_components.length) return 0;
+
+        let remainingBundles = null;
+        bundle_components.forEach(component => {
+            let componentQty = flt(component.qty);
+            if (componentQty <= 0) return;
+
+            let componentBaseStock = this.get_base_stock_qty(component.item_code) || flt(component.available_qty);
+            let componentReserved = this.get_reserved_stock_qty(component.item_code);
+            let componentRemaining = Math.max(0, componentBaseStock - componentReserved);
+            let bundleRemainingFromComponent = componentRemaining / componentQty;
+
+            if (remainingBundles === null || bundleRemainingFromComponent < remainingBundles) {
+                remainingBundles = bundleRemainingFromComponent;
+            }
+        });
+
+        return Math.max(0, remainingBundles === null ? 0 : remainingBundles);
+    }
+
+    refresh_all_card_stock_displays() {
+        this.$product_grid.find('.product-card').each((_, card) => {
+            let $card = $(card);
+            let item_code = $card.attr('data-item-code');
+            let display_conversion = flt($card.attr('data-display-conversion')) || 1;
+            let display_uom = $card.attr('data-item-uom');
+            this.update_card_stock_display(item_code, display_conversion, display_uom);
+        });
+    }
+
     update_card_stock_display(item_code, display_conversion=1, display_uom=null) {
         let $card = this.get_product_card(item_code, display_uom);
         if (!$card.length) return;
 
-        let base_stock = flt($card.attr('data-base-actual-qty'));
-        let reserved_stock = this.get_reserved_stock_qty(item_code);
-        let remaining_stock = Math.max(0, base_stock - reserved_stock);
+        let bundle_components = this.get_bundle_components_from_card($card);
+        let remaining_stock = bundle_components.length
+            ? this.get_remaining_bundle_qty(bundle_components)
+            : Math.max(0, flt($card.attr('data-base-actual-qty')) - this.get_reserved_stock_qty(item_code));
         let displayed_stock = display_conversion ? (remaining_stock / display_conversion) : remaining_stock;
 
         $card.attr('data-display-conversion', display_conversion);
@@ -440,10 +498,8 @@ class MiniMartPOS {
         item.qty = flt(item.qty) + delta;
         if (item.qty <= 0) {
             this.cart.splice(index, 1);
-            this.sync_grid_stock(item.item_code, 0);
-        } else {
-            this.sync_grid_stock(item.item_code, -delta);
         }
+        this.sync_grid_stock();
         this.render_cart();
     }
 
@@ -460,10 +516,8 @@ class MiniMartPOS {
         item.qty = flt(value);
         if (item.qty <= 0) {
             this.cart.splice(index, 1);
-            this.sync_grid_stock(item.item_code, 0);
-        } else {
-            this.sync_grid_stock(item.item_code, -diff);
         }
+        this.sync_grid_stock();
         this.render_cart();
     }
 
@@ -527,7 +581,7 @@ class MiniMartPOS {
         item.price = flt(uom_row.price);
         let conversion = flt(uom_row.conversion_factor);
         this.update_card_stock_display(item.item_code, conversion, item.uom);
-        this.sync_grid_stock(item.item_code, 0);
+        this.sync_grid_stock();
         // Optionally, reset discount on UOM change
         // item.discount_pct = 0;
         this.render_cart();
@@ -536,7 +590,7 @@ class MiniMartPOS {
     remove_item(index) {
         let item = this.cart[index];
         this.cart.splice(index, 1);
-        this.sync_grid_stock(item.item_code, 0);
+        this.sync_grid_stock();
         this.render_cart();
         this.focus_input();
     }
@@ -829,7 +883,7 @@ class MiniMartPOS {
                 args: { invoice_name: invoice_name },
                 callback: (r) => {
                     if (r.message) {
-                        r.message.forEach(item => this.sync_grid_stock(item.item_code, item.qty));
+                        this.sync_grid_stock();
                         this.load_recent_orders();
                         frappe.show_alert({message: __('Voided Successfully'), indicator: 'green'});
                     }
