@@ -1,8 +1,38 @@
+# macOS
 .DS_Store
+
+# Python
 *.pyc
-*.egg-info
+*.pyo
+__pycache__/
+*.egg-info/
+
+# Editors
+.vscode/
+.idea/
 *.swp
+*.swo
+
+# Node
+node_modules/
+
+# AI Tools
+.codex/
+
+# Bench / Logs
+*.log
+
+# Environment
+.env
+.env.*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+Thumbs.db
+
+# Misc
 tags
-node_modules
-__pycache__
-.codex
