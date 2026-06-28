@@ -3,9 +3,10 @@ import json
 import frappe
 from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import make_closing_entry_from_opening
 from erpnext.accounts.doctype.pos_invoice.pos_invoice import get_stock_availability
+from erpnext.selling.doctype.customer.customer import get_credit_limit, get_customer_outstanding
 from erpnext.stock.stock_ledger import NegativeStockError
 from frappe import _
-from frappe.utils import flt, now_datetime
+from frappe.utils import flt, getdate, now_datetime
 
 
 @frappe.whitelist()
@@ -299,9 +300,162 @@ def search_item(query):
 	return None
 
 
+def parse_cart_data(cart_data):
+	if isinstance(cart_data, str):
+		return json.loads(cart_data or "[]")
+	return cart_data or []
+
+
 @frappe.whitelist()
-def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0, total_payable=None):
-	"""Creates a POS Invoice with clean reconciliation for Closing Entries."""
+def hold_sale(cart, customer=None, grand_total=0, remarks=None, held_sale_name=None):
+	"""Save or update a suspended cart without creating stock or accounting entries."""
+	profile = get_assigned_pos_profile()
+	items = parse_cart_data(cart)
+	if not items:
+		frappe.throw(_("Cannot hold an empty cart."))
+
+	if held_sale_name:
+		doc = frappe.get_doc("Mart POS Held Sale", held_sale_name)
+		if doc.status != "Held":
+			frappe.throw(_("Held Sale {0} is no longer available.").format(held_sale_name))
+		if doc.cashier != frappe.session.user:
+			frappe.throw(_("You can only update your own held sales."))
+		if doc.company != profile.company or doc.warehouse != profile.warehouse:
+			frappe.throw(_("Held Sale {0} does not belong to this POS profile.").format(held_sale_name))
+	else:
+		doc = frappe.new_doc("Mart POS Held Sale")
+		doc.company = profile.company
+		doc.warehouse = profile.warehouse
+		doc.cashier = frappe.session.user
+		doc.status = "Held"
+		doc.created_on = now_datetime()
+
+	doc.customer = customer or profile.customer or "Guest"
+	doc.grand_total = flt(grand_total)
+	doc.cart_data = json.dumps(items)
+	doc.remarks = remarks
+	doc.flags.ignore_permissions = True
+	if doc.is_new():
+		doc.insert()
+	else:
+		doc.save()
+	return doc.name
+
+
+@frappe.whitelist()
+def get_held_sales():
+	"""Return active held sales for the current cashier and POS profile."""
+	profile = get_assigned_pos_profile()
+	return frappe.get_all(
+		"Mart POS Held Sale",
+		filters={
+			"status": "Held",
+			"cashier": frappe.session.user,
+			"company": profile.company,
+			"warehouse": profile.warehouse,
+		},
+		fields=["name", "customer", "grand_total", "created_on", "remarks"],
+		order_by="created_on desc",
+		limit=50,
+	)
+
+
+@frappe.whitelist()
+def get_held_sale(name):
+	"""Load one held sale and return its cart payload for restoration."""
+	doc = frappe.get_doc("Mart POS Held Sale", name)
+	if doc.status != "Held":
+		frappe.throw(_("Held Sale {0} is no longer available.").format(name))
+	if doc.cashier != frappe.session.user:
+		frappe.throw(_("You can only restore your own held sales."))
+
+	return {
+		"name": doc.name,
+		"customer": doc.customer,
+		"grand_total": doc.grand_total,
+		"cart": parse_cart_data(doc.cart_data),
+		"remarks": doc.remarks,
+	}
+
+
+def mark_held_sale_completed(held_sale_name, invoice_name=None):
+	if not held_sale_name:
+		return
+
+	doc = frappe.get_doc("Mart POS Held Sale", held_sale_name)
+	if doc.status != "Held":
+		return
+
+	if doc.cashier != frappe.session.user:
+		frappe.throw(_("You can only complete your own held sales."))
+
+	doc.status = "Completed"
+	if invoice_name:
+		doc.completed_invoice = invoice_name
+	doc.flags.ignore_permissions = True
+	doc.save()
+
+
+@frappe.whitelist()
+def complete_held_sale(held_sale_name, invoice_name=None):
+	mark_held_sale_completed(held_sale_name, invoice_name)
+	return held_sale_name
+
+
+def get_utang_credit_details(customer, company, amount=0):
+	if not customer or customer == "Guest" or not frappe.db.exists("Customer", customer):
+		frappe.throw(_("Utang is only available for registered customers."))
+
+	credit_limit = flt(get_credit_limit(customer, company))
+	current_outstanding = flt(
+		get_customer_outstanding(customer, company, ignore_outstanding_sales_order=True)
+	)
+	projected_outstanding = current_outstanding + flt(amount)
+
+	return {
+		"customer": customer,
+		"company": company,
+		"credit_limit": credit_limit,
+		"current_outstanding": current_outstanding,
+		"projected_outstanding": projected_outstanding,
+		"available_credit": credit_limit - current_outstanding,
+		"allowed": credit_limit > 0 and projected_outstanding <= credit_limit,
+	}
+
+
+@frappe.whitelist()
+def get_utang_credit_status(customer, amount=0):
+	profile = get_assigned_pos_profile()
+	return get_utang_credit_details(customer, profile.company, amount)
+
+
+def validate_utang_credit(customer, company, amount):
+	details = get_utang_credit_details(customer, company, amount)
+	if not details["allowed"]:
+		frappe.throw(
+			_(
+				"Credit limit exceeded. Current outstanding: {0}, Sale amount: {1}, Credit limit: {2}."
+			).format(
+				frappe.bold(details["current_outstanding"]),
+				frappe.bold(flt(amount)),
+				frappe.bold(details["credit_limit"]),
+			),
+			title=_("Utang Not Allowed"),
+		)
+	return details
+
+
+@frappe.whitelist()
+def create_invoice(
+	cart,
+	customer=None,
+	mode_of_payment="Cash",
+	amount_paid=0,
+	total_payable=None,
+	held_sale_name=None,
+	payment_due_date=None,
+):
+	"""Create a Sales Invoice using ERPNext's standard receivable and POS payment accounting."""
 	profile = get_assigned_pos_profile()
 
 	opening_entry = frappe.db.get_value(
@@ -314,19 +468,18 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0, t
 		frappe.throw(_("Please open a POS shift first."))
 
 	selected_customer = customer or profile.customer or "Guest"
-	invoice = frappe.new_doc("POS Invoice")
+	invoice = frappe.new_doc("Sales Invoice")
 
 	invoice.pos_profile = profile.name
-	invoice.pos_opening_entry = opening_entry
 	invoice.customer = selected_customer
 	invoice.company = profile.company
 	invoice.update_stock = 0
 	invoice.set_posting_time = 1
 	invoice.posting_date = now_datetime().date()
+	invoice.due_date = invoice.posting_date
+	invoice.set_warehouse = profile.warehouse
 
 	invoice.flags.ignore_permissions = True
-	invoice.flags.ignore_validate_stock = True
-	invoice.flags.ignore_mandatory = True
 
 	items = json.loads(cart)
 	for i in items:
@@ -372,38 +525,51 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0, t
 			invoice.calculate_taxes_and_totals()
 
 	total_to_pay = flt(invoice.grand_total)
-	paid = flt(amount_paid)
-	change = paid - total_to_pay if paid > total_to_pay else 0
+	received = flt(amount_paid)
+	if received < 0:
+		frappe.throw(_("Amount paid cannot be negative."))
 
-	invoice.paid_amount = paid
-	invoice.change_amount = change
+	is_utang = mode_of_payment == "Utang"
+	if is_utang:
+		validate_utang_credit(selected_customer, profile.company, total_to_pay)
+		received = 0
+
+	change = received - total_to_pay if received > total_to_pay else 0
+	outstanding_amount = max(total_to_pay - received, 0)
+
+	if outstanding_amount:
+		if not payment_due_date:
+			frappe.throw(_("Payment Due Date is required when the invoice has an outstanding balance."))
+
+		invoice.due_date = getdate(payment_due_date)
+		if invoice.due_date < invoice.posting_date:
+			frappe.throw(_("Payment Due Date cannot be before the invoice posting date."))
 
 	payment_account = frappe.db.get_value(
 		"Mode of Payment Account", {"parent": mode_of_payment, "company": profile.company}, "default_account"
 	)
 
-	invoice.append(
-		"payments", {"mode_of_payment": mode_of_payment, "account": payment_account, "amount": total_to_pay}
-	)
+	if received:
+		if not payment_account:
+			frappe.throw(
+				_("No default account found for Mode of Payment {0} and Company {1}.").format(
+					frappe.bold(mode_of_payment), frappe.bold(profile.company)
+				)
+			)
+
+		invoice.is_pos = 1
+		invoice.cash_bank_account = payment_account
+		invoice.account_for_change_amount = profile.account_for_change_amount
+		invoice.change_amount = change
+		invoice.append(
+			"payments",
+			{"mode_of_payment": mode_of_payment, "account": payment_account, "amount": received},
+		)
 
 	invoice.insert()
+	invoice.submit()
 
-	frappe.db.set_value(
-		"POS Invoice",
-		invoice.name,
-		{"docstatus": 1, "status": "Paid", "paid_amount": paid, "change_amount": change},
-		update_modified=False,
-	)
-
-	doc = frappe.get_doc("POS Invoice", invoice.name)
-	doc.__dict__.update(
-		{"enable_discount_accounting": 0, "use_company_roundoff_cost_center": 0, "is_opening": "No"}
-	)
-
-	try:
-		doc.make_gl_entries()
-	except Exception:
-		frappe.log_error(frappe.get_traceback(), _("POS GL Failure"))
+	mark_held_sale_completed(held_sale_name, invoice.name)
 
 	frappe.db.commit()
 	return invoice.name
@@ -414,17 +580,13 @@ def create_invoice(cart, customer=None, mode_of_payment="Cash", amount_paid=0, t
 
 @frappe.whitelist()
 def void_invoice(invoice_name):
-	"""Cancels a POS Invoice and returns items to restore UI stock counts."""
-	doc = frappe.get_doc("POS Invoice", invoice_name)
-	if doc.docstatus != 1:
-		frappe.throw(_("Only submitted invoices can be voided."))
-
-	items_to_return = []
-	for item in doc.items:
-		items_to_return.append({"item_code": item.item_code, "qty": item.qty})
-
-	doc.cancel()
-	return items_to_return
+	"""Submitted invoices cannot be voided from Mart POS."""
+	frappe.throw(
+		_("Checkout has already happened for Sales Invoice {0}. Use Return Sale instead.").format(
+			frappe.bold(invoice_name)
+		),
+		title=_("Void Not Allowed"),
+	)
 
 
 # --- RECENT ORDERS & CLOSING ---
@@ -433,11 +595,20 @@ def void_invoice(invoice_name):
 @frappe.whitelist()
 def get_recent_invoices(opening_entry):
 	return frappe.db.get_list(
-		"POS Invoice",
-		filters={"pos_opening_entry": opening_entry, "docstatus": 1},
-		fields=["name", "customer", "grand_total", "creation"],
+		"Sales Invoice",
+		filters={"owner": frappe.session.user, "docstatus": 1},
+		fields=[
+			"name",
+			"customer",
+			"grand_total",
+			"outstanding_amount",
+			"creation",
+			"status",
+			"is_return",
+			"return_against",
+		],
 		order_by="creation desc",
-		limit=10,
+		limit=20,
 	)
 
 

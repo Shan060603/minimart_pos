@@ -42,6 +42,8 @@ function render_pos_ui(page, shift_data) {
     window.pos_instance.init();
 
     page.set_primary_action(__('Open Drawer'), () => window.pos_instance.trigger_cash_drawer());
+    page.add_inner_button(__('Hold Sale'), () => window.pos_instance.hold_sale());
+    page.add_inner_button(__('Held Sales'), () => window.pos_instance.show_held_sales());
     page.add_menu_item(__('Close Shift'), () => window.pos_instance.close_shift());
 }
 
@@ -52,11 +54,13 @@ class MiniMartPOS {
         this.cart = [];
         this.customer_control = null;
         this.serialPort = null; 
+        this.active_held_sale_name = null;
         // keep track of the currently open payment dialog wrapper
         this.$payment_wrapper = null;
         
         // Modal State
         this.current_payment_total = 0;
+        this.current_utang_allowed = false;
         
         // Selectors
         this.$scan_input = $('#barcode-scan');
@@ -557,7 +561,7 @@ class MiniMartPOS {
                         <span class="item-total-label">${__('Total')}</span>
                         <span class="item-total-value">₱${lineTotal}</span>
                     </div>
-                    <button onclick="pos_instance.remove_item(${index})" class="btn-remove">×</button>
+                    <button onclick="pos_instance.void_cart_item(${index})" class="btn-remove" title="${__('Void Item')}">×</button>
                 </div>
             </div>
         `}).join('');
@@ -587,12 +591,17 @@ class MiniMartPOS {
         this.render_cart();
     }
 
-    remove_item(index) {
+    void_cart_item(index) {
         let item = this.cart[index];
+        if (!item) return;
         this.cart.splice(index, 1);
         this.sync_grid_stock();
         this.render_cart();
         this.focus_input();
+    }
+
+    remove_item(index) {
+        this.void_cart_item(index);
     }
 
     update_total() {
@@ -609,9 +618,155 @@ class MiniMartPOS {
         if (this.cart.length === 0) return;
         if (!confirm(__('Are you sure you want to clear the entire cart?'))) return;
         this.cart = [];
+        this.active_held_sale_name = null;
         this.render_cart();
         this.load_products(); // Refresh stock from server
         this.focus_input();
+    }
+
+    hold_sale() {
+        if (!this.cart.length) {
+            frappe.msgprint({
+                title: __('Cart Empty'),
+                indicator: 'red',
+                message: __('Please add items to the cart before holding the sale.')
+            });
+            return;
+        }
+
+        const customer = this.customer_control ? this.customer_control.get_value() : null;
+        if (!customer) {
+            frappe.msgprint({
+                title: __('Missing Customer'),
+                indicator: 'red',
+                message: __('Please select a customer or choose Guest before holding the sale.')
+            });
+            return;
+        }
+
+        let d = new frappe.ui.Dialog({
+            title: __('Hold Sale'),
+            fields: [
+                {
+                    fieldtype: 'Small Text',
+                    fieldname: 'remarks',
+                    label: __('Remarks')
+                }
+            ],
+            primary_action_label: __('Hold Sale'),
+            primary_action: (values) => {
+                frappe.call({
+                    method: "minimart_pos.api.hold_sale",
+                    args: {
+                        cart: JSON.stringify(this.cart),
+                        customer: customer,
+                        grand_total: flt(this.$total_display.text()),
+                        remarks: values.remarks,
+                        held_sale_name: this.active_held_sale_name
+                    },
+                    freeze: true,
+                    callback: (r) => {
+                        if (!r.message) return;
+                        d.hide();
+                        this.cart = [];
+                        this.active_held_sale_name = null;
+                        this.render_cart();
+                        this.load_products();
+                        this.focus_input();
+                        frappe.show_alert({ message: __('Sale held successfully'), indicator: 'green' });
+                    }
+                });
+            }
+        });
+        d.show();
+    }
+
+    show_held_sales() {
+        frappe.call({
+            method: "minimart_pos.api.get_held_sales",
+            callback: (r) => {
+                this.render_held_sales_dialog(r.message || []);
+            }
+        });
+    }
+
+    render_held_sales_dialog(held_sales) {
+        let d = new frappe.ui.Dialog({
+            title: __('Held Sales'),
+            fields: [
+                {
+                    fieldtype: 'HTML',
+                    fieldname: 'held_sales_html',
+                    options: this.get_held_sales_html(held_sales)
+                }
+            ]
+        });
+
+        d.on_page_show = () => {
+            d.$wrapper.find('.held-sale-row').on('click', (e) => {
+                let name = $(e.currentTarget).attr('data-name');
+                this.restore_held_sale(name, d);
+            });
+        };
+
+        d.show();
+    }
+
+    get_held_sales_html(held_sales) {
+        if (!held_sales.length) {
+            return `<div class="text-center text-muted p-3">${__('No held sales')}</div>`;
+        }
+
+        return `
+            <div class="list-group">
+                ${held_sales.map(sale => {
+                    const name = this.escape_html(sale.name);
+                    const customer = this.escape_html(sale.customer || __('Guest'));
+                    const remarks = this.escape_html(sale.remarks);
+                    const created_on = this.escape_html(frappe.datetime.str_to_user(sale.created_on));
+                    return `
+                    <button type="button" class="list-group-item list-group-item-action held-sale-row" data-name="${name}">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <strong>${name}</strong>
+                            <span>₱${flt(sale.grand_total).toFixed(2)}</span>
+                        </div>
+                        <div class="d-flex justify-content-between text-muted small mt-1">
+                            <span>${customer}</span>
+                            <span>${created_on}</span>
+                        </div>
+                        ${sale.remarks ? `<div class="text-muted small mt-1">${remarks}</div>` : ''}
+                    </button>
+                `}).join('')}
+            </div>
+        `;
+    }
+
+    escape_html(value) {
+        return $('<div>').text(value || '').html();
+    }
+
+    restore_held_sale(name, dialog) {
+        if (!name) return;
+        if (this.cart.length && !confirm(__('Replace the current cart with this held sale?'))) return;
+
+        frappe.call({
+            method: "minimart_pos.api.get_held_sale",
+            args: { name: name },
+            freeze: true,
+            callback: (r) => {
+                if (!r.message) return;
+                this.cart = r.message.cart || [];
+                this.active_held_sale_name = r.message.name;
+                if (this.customer_control && r.message.customer) {
+                    this.customer_control.set_value(r.message.customer);
+                }
+                this.render_cart();
+                this.sync_grid_stock();
+                this.focus_input();
+                dialog.hide();
+                frappe.show_alert({ message: __('Held sale restored'), indicator: 'green' });
+            }
+        });
     }
 
     load_recent_orders() {
@@ -624,22 +779,139 @@ class MiniMartPOS {
 
     render_recent_orders(orders) {
         if (!orders.length) {
-            this.$recent_orders_list.html('<div class="text-center p-2 text-muted">No orders</div>');
+            this.$recent_orders_list.html('<div class="text-center p-2 text-muted">No transactions</div>');
             return;
         }
-        let html = orders.map(order => `
-            <div class="recent-order-item">
-                <div class="d-flex justify-content-between" onclick="pos_instance.view_past_order('${order.name}')" style="cursor:pointer;">
-                    <span class="order-id">#${order.name.split('-').pop()}</span>
+        let html = orders.map(order => {
+            const invoice_name = this.escape_html(order.name);
+            const customer = this.escape_html(order.customer);
+            const status = this.escape_html(order.status || '');
+            const created_on = this.escape_html(frappe.datetime.str_to_user(order.creation));
+            const outstanding = flt(order.outstanding_amount);
+            return `
+            <button type="button" class="recent-order-item recent-transaction-item" data-invoice="${invoice_name}">
+                <div class="d-flex justify-content-between align-items-center">
+                    <span class="order-id">#${invoice_name.split('-').pop()}</span>
                     <span class="order-total">₱${flt(order.grand_total).toFixed(2)}</span>
                 </div>
                 <div class="d-flex justify-content-between align-items-center mt-1">
-                    <span class="order-customer text-muted" style="font-size: 10px;">${order.customer}</span>
-                    <button class="btn btn-xs btn-danger" onclick="pos_instance.void_transaction('${order.name}')">Void</button>
+                    <span class="order-customer text-muted" style="font-size: 10px;">${customer}</span>
+                    <span class="text-muted" style="font-size: 10px;">${created_on}</span>
                 </div>
-            </div>
-        `).join('');
+                <div class="d-flex justify-content-between align-items-center mt-1">
+                    <span class="text-muted" style="font-size: 10px;">
+                        ${status}${outstanding > 0 ? ` · ${__('Outstanding')} ₱${outstanding.toFixed(2)}` : ''}
+                    </span>
+                    <span class="d-flex align-items-center gap-2">
+                        ${order.is_return ? `<span class="badge badge-warning">${__('Return')}</span>` : ''}
+                        <button type="button" class="btn btn-xs btn-default recent-reprint-btn" data-invoice="${invoice_name}">
+                            <i class="fa fa-print"></i> ${__('Reprint')}
+                        </button>
+                    </span>
+                </div>
+            </button>
+        `}).join('');
         this.$recent_orders_list.html(html);
+        this.$recent_orders_list.find('.recent-transaction-item').off('click').on('click', (e) => {
+            this.show_transaction_menu($(e.currentTarget).attr('data-invoice'));
+        });
+        this.$recent_orders_list.find('.recent-reprint-btn').off('click').on('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.reprint_receipt($(e.currentTarget).attr('data-invoice'));
+        });
+    }
+
+    show_transaction_menu(invoice_name) {
+        if (!invoice_name) return;
+
+        let d = new frappe.ui.Dialog({
+            title: __('Transaction {0}', [invoice_name]),
+            fields: [
+                {
+                    fieldtype: 'HTML',
+                    fieldname: 'transaction_actions',
+                    options: `
+                        <div class="transaction-action-list">
+                            <button type="button" class="btn btn-default btn-block text-left" data-action="reprint">
+                                <i class="fa fa-print mr-2"></i>${__('Reprint Receipt')}
+                            </button>
+                            <button type="button" class="btn btn-default btn-block text-left" data-action="return">
+                                <i class="fa fa-undo mr-2"></i>${__('Return Sale')}
+                            </button>
+                            <button type="button" class="btn btn-default btn-block text-left" data-action="payment">
+                                <i class="fa fa-money mr-2"></i>${__('Receive Payment')}
+                            </button>
+                            <button type="button" class="btn btn-default btn-block text-left" data-action="view">
+                                <i class="fa fa-file-text-o mr-2"></i>${__('View Invoice')}
+                            </button>
+                        </div>
+                    `
+                }
+            ]
+        });
+
+        d.on_page_show = () => {
+            d.$wrapper.find('[data-action="reprint"]').on('click', () => {
+                d.hide();
+                this.reprint_receipt(invoice_name);
+            });
+            d.$wrapper.find('[data-action="return"]').on('click', () => {
+                d.hide();
+                this.return_sale(invoice_name);
+            });
+            d.$wrapper.find('[data-action="payment"]').on('click', () => {
+                d.hide();
+                this.receive_payment(invoice_name);
+            });
+            d.$wrapper.find('[data-action="view"]').on('click', () => {
+                d.hide();
+                this.view_past_order(invoice_name);
+            });
+        };
+
+        d.show();
+    }
+
+    reprint_receipt(invoice_name) {
+        if (!invoice_name) return;
+
+        const params = new URLSearchParams({
+            doctype: 'Sales Invoice',
+            name: invoice_name,
+            trigger_print: 1
+        });
+        window.open(`/printview?${params.toString()}`, '_blank');
+    }
+
+    return_sale(invoice_name) {
+        if (!invoice_name) return;
+
+        frappe.call({
+            method: "erpnext.accounts.doctype.sales_invoice.sales_invoice.make_sales_return",
+            args: { source_name: invoice_name },
+            freeze: true,
+            callback: (r) => {
+                if (!r.message) return;
+                frappe.model.sync(r.message);
+                frappe.set_route("Form", r.message.doctype, r.message.name);
+            }
+        });
+    }
+
+    receive_payment(invoice_name) {
+        if (!invoice_name) return;
+
+        frappe.call({
+            method: "erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry",
+            args: { dt: "Sales Invoice", dn: invoice_name },
+            freeze: true,
+            callback: (r) => {
+                if (!r.message) return;
+                frappe.model.sync(r.message);
+                frappe.set_route("Form", r.message.doctype, r.message.name);
+            }
+        });
     }
 
     process_payment() {
@@ -706,6 +978,14 @@ class MiniMartPOS {
                                 <div class="d-flex gap-2 mb-3">
                                     <button class="btn btn-primary flex-grow-1 mop-btn active" data-mop="Cash">CASH</button>
                                     <button class="btn btn-outline-dark flex-grow-1 mop-btn" data-mop="G-Cash">G-CASH</button>
+                                    <button class="btn btn-outline-dark flex-grow-1 mop-btn" data-mop="Utang">UTANG</button>
+                                </div>
+
+                                <div id="utang-credit-status" class="small mb-3" style="display:none;"></div>
+
+                                <div id="payment-due-date-wrapper" class="mb-3" style="display:none;">
+                                    <label class="small font-weight-bold">PAYMENT DUE DATE</label>
+                                    <input type="date" id="payment-due-date" class="form-control">
                                 </div>
 
                                 <label class="small font-weight-bold">QUICK CASH</label>
@@ -728,9 +1008,11 @@ class MiniMartPOS {
             primary_action(values) {
                 // using scoped lookup inside wrapper ensures we target the correct dialog
                 const $wrapper = d.$wrapper;
-                let received = flt($wrapper.find('#numpad-input').val());
                 let selected_mop = $wrapper.find('.mop-btn.active').attr('data-mop');
+                let received = selected_mop === 'Utang' ? 0 : flt($wrapper.find('#numpad-input').val());
                 let customer = me.customer_control.get_value();
+                let has_outstanding = selected_mop === 'Utang' || received < me.current_payment_total;
+                let payment_due_date = $wrapper.find('#payment-due-date').val();
 
                 if (!customer) {
                     frappe.msgprint({
@@ -741,38 +1023,23 @@ class MiniMartPOS {
                     return;
                 }
 
-                if (received < me.current_payment_total) {
-                    frappe.msgprint(__("Insufficient amount received."));
+                if (has_outstanding && !payment_due_date) {
+                    frappe.msgprint({
+                        title: __('Missing Due Date'),
+                        indicator: 'red',
+                        message: __('Please set the payment due date before submitting.')
+                    });
                     return;
                 }
-                
-                // Prepare cart for submission: only send required fields
-                let cart_payload = me.cart.map(i => ({
-                    item_code: i.item_code,
-                    qty: i.qty,
-                    uom: i.uom,
-                    price: i.price,
-                    discount_pct: i.discount_pct
-                }));
-                frappe.call({
-                    method: "minimart_pos.api.create_invoice",
-                    args: { 
-                        cart: JSON.stringify(cart_payload), 
-                        customer: customer, 
-                        mode_of_payment: selected_mop, 
-                        amount_paid: received,
-                        total_payable: me.current_payment_total
-                    },
-                    freeze: true,
-                    callback: (r) => {
-                        me.trigger_cash_drawer();
-                        d.hide();
-                        me.cart = [];
-                        me.render_cart();
-                        me.load_recent_orders();
-                        me.focus_input();
-                    }
-                });
+
+                if (selected_mop === 'Utang') {
+                    me.validate_utang_credit(customer, me.current_payment_total, () => {
+                        me.submit_payment(d, selected_mop, 0, customer, payment_due_date);
+                    });
+                    return;
+                }
+
+                me.submit_payment(d, selected_mop, received, customer, payment_due_date);
             }
         });
 
@@ -784,6 +1051,8 @@ class MiniMartPOS {
             // Slight delay for focus to ensure DOM is ready
             setTimeout(() => {
                 me.$payment_wrapper.find('#numpad-input').focus().select();
+                me.$payment_wrapper.find('#payment-due-date').val(frappe.datetime.get_today());
+                me.update_payment_ui();
             }, 100);
         };
 
@@ -799,6 +1068,68 @@ class MiniMartPOS {
         d.show();
     }
 
+    submit_payment(dialog, selected_mop, received, customer, payment_due_date=null) {
+        let cart_payload = this.cart.map(i => ({
+            item_code: i.item_code,
+            qty: i.qty,
+            uom: i.uom,
+            price: i.price,
+            discount_pct: i.discount_pct
+        }));
+
+        frappe.call({
+            method: "minimart_pos.api.create_invoice",
+            args: {
+                cart: JSON.stringify(cart_payload),
+                customer: customer,
+                mode_of_payment: selected_mop,
+                amount_paid: received,
+                total_payable: this.current_payment_total,
+                held_sale_name: this.active_held_sale_name,
+                payment_due_date: payment_due_date
+            },
+            freeze: true,
+            callback: (r) => {
+                if (selected_mop !== 'Utang') {
+                    this.trigger_cash_drawer();
+                }
+                dialog.hide();
+                this.cart = [];
+                this.active_held_sale_name = null;
+                this.render_cart();
+                this.load_recent_orders();
+                this.focus_input();
+            }
+        });
+    }
+
+    validate_utang_credit(customer, amount, on_success) {
+        frappe.call({
+            method: "minimart_pos.api.get_utang_credit_status",
+            args: { customer: customer, amount: amount },
+            freeze: true,
+            callback: (r) => {
+                if (!r.message) return;
+                if (!r.message.allowed) {
+                    frappe.msgprint({
+                        title: __('Utang Not Allowed'),
+                        indicator: 'red',
+                        message: __(
+                            'Credit limit exceeded. Current outstanding: {0}, Sale amount: {1}, Credit limit: {2}.',
+                            [
+                                flt(r.message.current_outstanding).toFixed(2),
+                                flt(amount).toFixed(2),
+                                flt(r.message.credit_limit).toFixed(2)
+                            ]
+                        )
+                    });
+                    return;
+                }
+                if (on_success) on_success(r.message);
+            }
+        });
+    }
+
     attach_payment_listeners(original_total) {
         let me = this;
         // operate within the current payment dialog wrapper to avoid clashes
@@ -812,6 +1143,7 @@ class MiniMartPOS {
         // Numpad Logic
         $wrapper.find('.num-btn').on('click', function(e) {
             e.preventDefault();
+            if ($wrapper.find('.mop-btn.active').attr('data-mop') === 'Utang') return;
             let val = $(this).attr('data-val');
             let cur = $input.val();
             
@@ -828,6 +1160,7 @@ class MiniMartPOS {
         // Quick Cash Logic
         $wrapper.find('.quick-btn').on('click', function(e) {
             e.preventDefault();
+            if ($wrapper.find('.mop-btn.active').attr('data-mop') === 'Utang') return;
             $input.val($(this).attr('data-amt'));
             me.update_payment_ui();
         });
@@ -843,6 +1176,9 @@ class MiniMartPOS {
                 me.current_payment_total = original_total - val;
             }
             me.update_payment_ui();
+            if ($wrapper.find('.mop-btn.active').attr('data-mop') === 'Utang') {
+                me.handle_payment_method_change();
+            }
         });
 
         // MOP Toggle Logic
@@ -850,10 +1186,16 @@ class MiniMartPOS {
             e.preventDefault();
             $wrapper.find('.mop-btn').removeClass('active btn-primary').addClass('btn-outline-dark');
             $(this).addClass('active btn-primary').removeClass('btn-outline-dark');
+            me.handle_payment_method_change();
         });
 
         // Keyboard Typing
-        $input.on('input keyup', () => me.update_payment_ui());
+        $input.on('input keyup', () => {
+            if ($wrapper.find('.mop-btn.active').attr('data-mop') === 'Utang') {
+                $input.val('0');
+            }
+            me.update_payment_ui();
+        });
 
         // Enter key to submit
         $input.on('keypress', function(e) {
@@ -866,10 +1208,74 @@ class MiniMartPOS {
         me.update_payment_ui();
     }
 
+    handle_payment_method_change() {
+        const $wrapper = this.$payment_wrapper || $(document);
+        const selected_mop = $wrapper.find('.mop-btn.active').attr('data-mop');
+        const $input = $wrapper.find('#numpad-input');
+        const $utang_status = $wrapper.find('#utang-credit-status');
+
+        if (selected_mop !== 'Utang') {
+            this.current_utang_allowed = false;
+            $input.prop('disabled', false);
+            $utang_status.hide().empty();
+            this.update_payment_ui();
+            return;
+        }
+
+        $input.val('0').prop('disabled', true);
+        this.current_utang_allowed = false;
+
+        const customer = this.customer_control ? this.customer_control.get_value() : null;
+        $utang_status
+            .show()
+            .removeClass('text-success text-danger')
+            .addClass('text-muted')
+            .html(__('Checking credit limit...'));
+
+        frappe.call({
+            method: "minimart_pos.api.get_utang_credit_status",
+            args: { customer: customer, amount: this.current_payment_total },
+            callback: (r) => {
+                if (!r.message) return;
+                this.current_utang_allowed = Boolean(r.message.allowed);
+                $utang_status
+                    .removeClass('text-muted text-danger text-success')
+                    .addClass(r.message.allowed ? 'text-success' : 'text-danger')
+                    .html(
+                        `${__('Outstanding')}: ₱${flt(r.message.current_outstanding).toFixed(2)}<br>` +
+                        `${__('Credit Limit')}: ₱${flt(r.message.credit_limit).toFixed(2)}<br>` +
+                        `${__('After Sale')}: ₱${flt(r.message.projected_outstanding).toFixed(2)}`
+                    );
+            },
+            error: () => {
+                this.current_utang_allowed = false;
+                $utang_status
+                    .removeClass('text-muted text-success')
+                    .addClass('text-danger')
+                    .html(__('Utang is not allowed for this customer or amount.'));
+            }
+        });
+
+        this.update_payment_ui();
+    }
+
     update_payment_ui() {
         const $wrapper = this.$payment_wrapper || $(document);
-        let received = flt($wrapper.find('#numpad-input').val());
+        let selected_mop = $wrapper.find('.mop-btn.active').attr('data-mop');
+        let received = selected_mop === 'Utang' ? 0 : flt($wrapper.find('#numpad-input').val());
         let change = received - this.current_payment_total;
+        let has_outstanding = selected_mop === 'Utang' || received < this.current_payment_total;
+        let $due_date_wrapper = $wrapper.find('#payment-due-date-wrapper');
+        let $due_date = $wrapper.find('#payment-due-date');
+
+        if (has_outstanding) {
+            if (!$due_date.val()) {
+                $due_date.val(frappe.datetime.get_today());
+            }
+            $due_date_wrapper.show();
+        } else {
+            $due_date_wrapper.hide();
+        }
         
         $wrapper.find('#modal-change-val').text('₱' + (change >= 0 ? change.toFixed(2) : '0.00'));
         $wrapper.find('#modal-change-val').css('color', change >= 0 ? '#00ff00' : '#ff4d4d');
@@ -877,22 +1283,14 @@ class MiniMartPOS {
     }
 
     void_transaction(invoice_name) {
-        frappe.confirm(__('Void order {0}?', [invoice_name]), () => {
-            frappe.call({
-                method: "minimart_pos.api.void_invoice",
-                args: { invoice_name: invoice_name },
-                callback: (r) => {
-                    if (r.message) {
-                        this.sync_grid_stock();
-                        this.load_recent_orders();
-                        frappe.show_alert({message: __('Voided Successfully'), indicator: 'green'});
-                    }
-                }
-            });
+        frappe.msgprint({
+            title: __('Void Not Allowed'),
+            indicator: 'orange',
+            message: __('Checkout has already happened for {0}. Use Return Sale instead.', [invoice_name])
         });
     }
 
-    view_past_order(invoice_name) { if (invoice_name) frappe.set_route("Form", "POS Invoice", invoice_name); }
+    view_past_order(invoice_name) { if (invoice_name) frappe.set_route("Form", "Sales Invoice", invoice_name); }
     close_shift() {
         frappe.confirm(__('Close shift?'), () => {
             frappe.call({ method: "minimart_pos.api.close_pos_shift", args: { opening_entry: this.shift_data.opening_entry }, callback: () => location.reload() });

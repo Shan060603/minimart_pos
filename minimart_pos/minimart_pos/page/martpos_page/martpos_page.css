@@ -927,6 +927,27 @@ html, body {
     border-radius: 6px;
 }
 
+.recent-transaction-item {
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+}
+
+.recent-transaction-item:hover {
+    border-color: #3498db;
+    background: #fff;
+}
+
+.transaction-action-list .btn {
+    margin-bottom: 8px;
+}
+
+.recent-reprint-btn {
+    padding: 2px 6px;
+    font-size: 10px;
+    line-height: 1.2;
+}
+
 /* --- ⚠️ VALIDATION SHAKE --- */
 @keyframes shake {
     0%, 100% { transform: translateX(0); }
