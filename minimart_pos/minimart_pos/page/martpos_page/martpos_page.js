@@ -70,6 +70,8 @@ class MiniMartPOS {
         this.$product_grid = $('#product-grid');
         this.$recent_orders_list = $('#recent-orders-list');
         this.$clear_cart_btn = $('#clear-cart-btn');
+        this.product_result_limit = 20;
+        this.product_search_timer = null;
     }
 
     init() {
@@ -120,7 +122,7 @@ class MiniMartPOS {
                 let code = this.$scan_input.val().trim();
                 if (code) this.fetch_item(code);
                 this.$scan_input.val('');
-                this.filter_products();
+                this.load_products();
                 e.preventDefault();
             }
         };
@@ -128,8 +130,8 @@ class MiniMartPOS {
         this.$scan_input.on('keypress', handleBarcodeScan);
         this.$scan_input.on('keydown', handleBarcodeScan);
 
-        this.$scan_input.on('input', () => this.filter_products());
-        this.$group_filter.on('change', () => { this.filter_products(); this.focus_input(); });
+        this.$scan_input.on('input', () => this.schedule_product_refresh());
+        this.$group_filter.on('change', () => { this.load_products(); this.focus_input(); });
 
         $(document).on('click', (e) => {
             if (!$(e.target).closest('#barcode-scan, #item-group-filter, #customer-search-container, .awesomplete, .modal-dialog, .cart-qty-input, .cart-uom-select, .price-btn, .discount-btn, .btn-qty, .btn-remove, .num-btn, .quick-btn').length) {
@@ -167,14 +169,31 @@ class MiniMartPOS {
         });
     }
 
+    schedule_product_refresh() {
+        clearTimeout(this.product_search_timer);
+        this.product_search_timer = setTimeout(() => this.load_products(), 180);
+    }
+
     load_products() {
+        let search_term = this.$scan_input.val().trim();
+        let item_group = this.$group_filter.val();
         frappe.call({
             method: "minimart_pos.api.get_products",
+            args: {
+                search_term: search_term,
+                item_group: item_group,
+                limit_page_length: this.product_result_limit
+            },
             callback: (r) => { if (r.message) this.render_products(r.message); }
         });
     }
 
     render_products(products) {
+        if (!products.length) {
+            this.$product_grid.html(`<div class="pos-loading-state">${__('No products found')}</div>`);
+            return;
+        }
+
         let html = products.map(item => {
             const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
             const bundleComponents = encodeURIComponent(JSON.stringify(item.bundle_components || []));
@@ -205,20 +224,6 @@ class MiniMartPOS {
             `;
         }).join('');
         this.$product_grid.html(html);
-        this.filter_products();
-    }
-
-    filter_products() {
-        let keyword = this.$scan_input.val().toLowerCase().trim();
-        let selected_group = this.$group_filter.val();
-        this.$product_grid.find('.product-card').each(function() {
-            let name = $(this).attr('data-item-name') || "";
-            let code = $(this).attr('data-item-code') || "";
-            let group = $(this).attr('data-item-group') || "";
-            let match = (name.includes(keyword) || code.includes(keyword)) &&
-                        (selected_group === "" || group === selected_group);
-            $(this).toggle(match);
-        });
     }
 
     fetch_item(query) {

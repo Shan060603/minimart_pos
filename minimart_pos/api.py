@@ -201,7 +201,7 @@ def get_bundle_available_qty(components):
 	return min(possible_qty) if possible_qty else 0
 
 
-def get_catalog_rows(profile, item_code=None, search_term=None):
+def get_catalog_rows(profile, item_code=None, search_term=None, item_group=None, limit_page_length=None):
 	pricing_date = get_current_pricing_date()
 	conditions = [
 		"i.disabled = 0",
@@ -214,6 +214,10 @@ def get_catalog_rows(profile, item_code=None, search_term=None):
 	if item_code:
 		conditions.append("i.name = %s")
 		values.append(item_code)
+
+	if item_group:
+		conditions.append("i.item_group = %s")
+		values.append(item_group)
 
 	if search_term:
 		like_query = f"%{search_term}%"
@@ -234,6 +238,11 @@ def get_catalog_rows(profile, item_code=None, search_term=None):
 			i.item_name ASC,
 			conversion_factor ASC
 		"""
+
+	limit_clause = ""
+	if limit_page_length:
+		limit_clause = "LIMIT %s"
+		values.append(int(limit_page_length))
 
 	return frappe.db.sql(
 		f"""
@@ -278,6 +287,7 @@ def get_catalog_rows(profile, item_code=None, search_term=None):
 		LEFT JOIN `tabUOM Conversion Detail` iu ON iu.parent = i.name AND iu.uom = ip.uom
 		WHERE {" AND ".join(conditions)}
 		ORDER BY {order_by}
+		{limit_clause}
 		""",
 		values,
 		as_dict=1,
@@ -389,10 +399,18 @@ def create_opening_entry(pos_profile, amount=0):
 
 
 @frappe.whitelist()
-def get_products():
+def get_products(search_term=None, item_group=None, limit_page_length=20):
 	"""Fetches saleable POS items, including product bundles with computed availability."""
 	profile = get_assigned_pos_profile()
-	rows = get_catalog_rows(profile)
+	search_term = (search_term or "").strip()
+	item_group = (item_group or "").strip()
+	limit_page_length = int(limit_page_length or 20)
+	rows = get_catalog_rows(
+		profile,
+		search_term=search_term or None,
+		item_group=item_group or None,
+		limit_page_length=limit_page_length,
+	)
 	if not rows:
 		return []
 
