@@ -9,6 +9,33 @@ from frappe import _
 from frappe.utils import flt, getdate, now_datetime
 
 
+def get_current_pricing_date():
+	return getdate(now_datetime())
+
+
+def get_latest_item_price_rate(item_code, uom, price_list, pricing_date=None):
+	"""Return the latest active price for one item/UOM/price list as of the given date."""
+	pricing_date = pricing_date or get_current_pricing_date()
+	result = frappe.db.sql(
+		"""
+		SELECT ip.price_list_rate
+		FROM `tabItem Price` ip
+		WHERE ip.item_code = %s
+			AND ip.price_list = %s
+			AND IFNULL(ip.uom, '') = %s
+			AND (ip.valid_from IS NULL OR ip.valid_from <= %s)
+			AND (ip.valid_upto IS NULL OR ip.valid_upto >= %s)
+		ORDER BY
+			COALESCE(ip.valid_from, '1900-01-01') DESC,
+			COALESCE(ip.creation, '1900-01-01 00:00:00') DESC,
+			ip.name DESC
+		LIMIT 1
+		""",
+		(item_code, price_list, uom or "", pricing_date, pricing_date),
+	)
+	return flt(result[0][0]) if result else 0
+
+
 @frappe.whitelist()
 def get_item_uoms_and_prices(item_code, price_list=None):
 	"""Return UOMs and prices for an item, for POS UOM switching."""
@@ -30,12 +57,7 @@ def get_item_uoms_and_prices(item_code, price_list=None):
 
 	# Fetch prices for each UOM
 	for uom in uoms:
-		price = frappe.db.get_value(
-			"Item Price",
-			{"item_code": item_code, "uom": uom["uom"], "price_list": price_list},
-			"price_list_rate",
-		)
-		uom["price"] = frappe.utils.flt(price) if price is not None else 0
+		uom["price"] = get_latest_item_price_rate(item_code, uom["uom"], price_list)
 
 	return uoms
 
@@ -95,14 +117,99 @@ def enrich_pos_item(row, warehouse):
 	return row
 
 
+def get_stock_qty_map(item_codes, warehouse):
+	"""Fetch stock in one query so the POS grid doesn't resolve each item individually."""
+	if not item_codes or not warehouse:
+		return {}
+
+	rows = frappe.get_all(
+		"Bin",
+		filters={"warehouse": warehouse, "item_code": ["in", list(item_codes)]},
+		fields=["item_code", "actual_qty"],
+		limit_page_length=0,
+	)
+	return {row.item_code: flt(row.actual_qty) for row in rows}
+
+
+def get_active_bundle_names(item_codes):
+	if not item_codes:
+		return set()
+
+	return set(
+		frappe.get_all(
+			"Product Bundle",
+			filters={"name": ["in", list(item_codes)], "disabled": 0},
+			pluck="name",
+			limit_page_length=0,
+		)
+	)
+
+
+def get_bundle_component_map(bundle_names, stock_qty_map=None):
+	if not bundle_names:
+		return {}
+
+	component_rows = frappe.get_all(
+		"Product Bundle Item",
+		filters={"parent": ["in", list(bundle_names)]},
+		fields=["parent", "item_code", "qty"],
+		order_by="parent asc, idx asc",
+		limit_page_length=0,
+	)
+	if not component_rows:
+		return {}
+
+	component_item_codes = {row.item_code for row in component_rows}
+	stock_items = set(
+		frappe.get_all(
+			"Item",
+			filters={"name": ["in", list(component_item_codes)], "is_stock_item": 1},
+			pluck="name",
+			limit_page_length=0,
+		)
+	)
+
+	bundle_components = {bundle_name: [] for bundle_name in bundle_names}
+	stock_qty_map = stock_qty_map or {}
+
+	for row in component_rows:
+		if row.item_code not in stock_items:
+			continue
+
+		bundle_components.setdefault(row.parent, []).append(
+			{
+				"item_code": row.item_code,
+				"qty": flt(row.qty),
+				"available_qty": flt(stock_qty_map.get(row.item_code, 0)),
+			}
+		)
+
+	return bundle_components
+
+
+def get_bundle_available_qty(components):
+	if not components:
+		return 0
+
+	possible_qty = []
+	for component in components:
+		component_qty = flt(component.get("qty")) or 0
+		if component_qty <= 0:
+			continue
+		possible_qty.append(flt(component.get("available_qty")) / component_qty)
+
+	return min(possible_qty) if possible_qty else 0
+
+
 def get_catalog_rows(profile, item_code=None, search_term=None):
+	pricing_date = get_current_pricing_date()
 	conditions = [
 		"i.disabled = 0",
 		"i.has_variants = 0",
 		"i.is_sales_item = 1",
 		"(i.is_stock_item = 1 OR EXISTS (SELECT 1 FROM `tabProduct Bundle` pb WHERE pb.name = i.name AND pb.disabled = 0))",
 	]
-	values = [profile.selling_price_list]
+	values = [profile.selling_price_list, pricing_date, pricing_date, pricing_date, pricing_date]
 
 	if item_code:
 		conditions.append("i.name = %s")
@@ -142,7 +249,32 @@ def get_catalog_rows(profile, item_code=None, search_term=None):
 			END as conversion_factor,
 			COALESCE(ip.price_list_rate, 0) as price
 		FROM `tabItem` i
-		LEFT JOIN `tabItem Price` ip ON ip.item_code = i.name AND ip.price_list = %s
+		LEFT JOIN `tabItem Price` ip
+			ON ip.item_code = i.name
+			AND ip.price_list = %s
+			AND (ip.valid_from IS NULL OR ip.valid_from <= %s)
+			AND (ip.valid_upto IS NULL OR ip.valid_upto >= %s)
+			AND NOT EXISTS (
+				SELECT 1
+				FROM `tabItem Price` ip_newer
+				WHERE ip_newer.item_code = ip.item_code
+					AND ip_newer.price_list = ip.price_list
+					AND IFNULL(ip_newer.uom, '') = IFNULL(ip.uom, '')
+					AND (ip_newer.valid_from IS NULL OR ip_newer.valid_from <= %s)
+					AND (ip_newer.valid_upto IS NULL OR ip_newer.valid_upto >= %s)
+					AND (
+						COALESCE(ip_newer.valid_from, '1900-01-01') > COALESCE(ip.valid_from, '1900-01-01')
+						OR (
+							COALESCE(ip_newer.valid_from, '1900-01-01') = COALESCE(ip.valid_from, '1900-01-01')
+							AND COALESCE(ip_newer.creation, '1900-01-01 00:00:00') > COALESCE(ip.creation, '1900-01-01 00:00:00')
+						)
+						OR (
+							COALESCE(ip_newer.valid_from, '1900-01-01') = COALESCE(ip.valid_from, '1900-01-01')
+							AND COALESCE(ip_newer.creation, '1900-01-01 00:00:00') = COALESCE(ip.creation, '1900-01-01 00:00:00')
+							AND ip_newer.name > ip.name
+						)
+					)
+			)
 		LEFT JOIN `tabUOM Conversion Detail` iu ON iu.parent = i.name AND iu.uom = ip.uom
 		WHERE {" AND ".join(conditions)}
 		ORDER BY {order_by}
@@ -261,7 +393,34 @@ def get_products():
 	"""Fetches saleable POS items, including product bundles with computed availability."""
 	profile = get_assigned_pos_profile()
 	rows = get_catalog_rows(profile)
-	return [row for row in (enrich_pos_item(row, profile.warehouse) for row in rows) if flt(row["actual_qty"]) > 0]
+	if not rows:
+		return []
+
+	item_codes = {row["item_code"] for row in rows}
+	bundle_names = get_active_bundle_names(item_codes)
+	bundle_components = get_bundle_component_map(bundle_names)
+	component_item_codes = {
+		component["item_code"]
+		for components in bundle_components.values()
+		for component in components
+	}
+	stock_qty_map = get_stock_qty_map(item_codes | component_item_codes, profile.warehouse)
+	bundle_components = get_bundle_component_map(bundle_names, stock_qty_map=stock_qty_map)
+
+	products = []
+	for row in rows:
+		product = dict(row)
+		components = bundle_components.get(product["item_code"], [])
+		product["bundle_components"] = components
+		product["is_product_bundle"] = 1 if components else 0
+		product["actual_qty"] = (
+			get_bundle_available_qty(components)
+			if product["is_product_bundle"]
+			else flt(stock_qty_map.get(product["item_code"], 0))
+		)
+		products.append(product)
+
+	return products
 
 
 @frappe.whitelist()
@@ -280,13 +439,13 @@ def get_item_by_barcode(barcode):
 			return None
 
 		item = enrich_pos_item(item_data[0], profile.warehouse)
-		return item if flt(item["actual_qty"]) > 0 else None
+		return item
 	return None
 
 
 @frappe.whitelist()
 def search_item(query):
-	"""Find the first in-stock POS item by exact code or partial name/code match."""
+	"""Find the first POS item by exact code or partial name/code match."""
 	query = (query or "").strip()
 	if not query:
 		return None
@@ -294,9 +453,7 @@ def search_item(query):
 	profile = get_assigned_pos_profile()
 	items = get_catalog_rows(profile, search_term=query)
 	for row in items:
-		item = enrich_pos_item(row, profile.warehouse)
-		if flt(item["actual_qty"]) > 0:
-			return item
+		return enrich_pos_item(row, profile.warehouse)
 	return None
 
 
@@ -400,6 +557,62 @@ def mark_held_sale_completed(held_sale_name, invoice_name=None):
 def complete_held_sale(held_sale_name, invoice_name=None):
 	mark_held_sale_completed(held_sale_name, invoice_name)
 	return held_sale_name
+
+
+@frappe.whitelist()
+def add_item_price_history(item_code, uom=None, price=0, price_list=None):
+	"""Append a new selling Item Price row for POS manual pricing and return refreshed UOM prices."""
+	if not item_code:
+		frappe.throw(_("Item Code is required."))
+
+	price = flt(price)
+	if price < 0:
+		frappe.throw(_("Price cannot be negative."))
+
+	profile = get_assigned_pos_profile()
+	item = frappe.get_doc("Item", item_code)
+	uom = uom or item.stock_uom
+	price_list = price_list or profile.selling_price_list or frappe.db.get_single_value("Selling Settings", "selling_price_list")
+	pricing_date = get_current_pricing_date()
+
+	current_price_name = frappe.db.sql(
+		"""
+		SELECT ip.name
+		FROM `tabItem Price` ip
+		WHERE ip.item_code = %s
+			AND ip.price_list = %s
+			AND IFNULL(ip.uom, '') = %s
+			AND (ip.valid_from IS NULL OR ip.valid_from <= %s)
+			AND (ip.valid_upto IS NULL OR ip.valid_upto >= %s)
+		ORDER BY
+			COALESCE(ip.valid_from, '1900-01-01') DESC,
+			COALESCE(ip.creation, '1900-01-01 00:00:00') DESC,
+			ip.name DESC
+		LIMIT 1
+		""",
+		(item_code, price_list, uom or "", pricing_date, pricing_date),
+	)
+
+	if current_price_name:
+		frappe.db.set_value("Item Price", current_price_name[0][0], "valid_upto", pricing_date, update_modified=False)
+
+	item_price = frappe.new_doc("Item Price")
+	item_price.item_code = item_code
+	item_price.uom = uom
+	item_price.price_list = price_list
+	item_price.price_list_rate = price
+	item_price.valid_from = pricing_date
+	item_price.flags.ignore_permissions = True
+	item_price.insert()
+
+	return {
+		"item_code": item_code,
+		"uom": uom,
+		"price": price,
+		"price_list": price_list,
+		"valid_from": pricing_date,
+		"uoms": get_item_uoms_and_prices(item_code, price_list=price_list),
+	}
 
 
 def get_utang_credit_details(customer, company, amount=0):

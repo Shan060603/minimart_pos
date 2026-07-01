@@ -132,7 +132,7 @@ class MiniMartPOS {
         this.$group_filter.on('change', () => { this.filter_products(); this.focus_input(); });
 
         $(document).on('click', (e) => {
-            if (!$(e.target).closest('#barcode-scan, #item-group-filter, #customer-search-container, .awesomplete, .modal-dialog, .cart-qty-input, .btn-qty, .num-btn, .quick-btn').length) {
+            if (!$(e.target).closest('#barcode-scan, #item-group-filter, #customer-search-container, .awesomplete, .modal-dialog, .cart-qty-input, .cart-uom-select, .price-btn, .discount-btn, .btn-qty, .btn-remove, .num-btn, .quick-btn').length) {
                 this.focus_input();
             }
         });
@@ -176,13 +176,12 @@ class MiniMartPOS {
 
     render_products(products) {
         let html = products.map(item => {
-            if (flt(item.actual_qty) <= 0) return '';
             const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
             const bundleComponents = encodeURIComponent(JSON.stringify(item.bundle_components || []));
             const bundleLabel = item.is_product_bundle ? `<span class="bundle-badge">${__('Bundle')}</span>` : '';
             let conversion = flt(item.conversion_factor) || 1;
             let display_qty = conversion ? (flt(item.actual_qty) / conversion) : flt(item.actual_qty);
-            let badge_class = display_qty <= 5 ? 'bg-warning' : 'bg-success';
+            let badge_class = display_qty <= 0 ? 'bg-danger' : (display_qty <= 5 ? 'bg-warning' : 'bg-success');
             return `
                 <div class="product-card"
                       data-item-code="${item.item_code.toLowerCase()}"
@@ -216,9 +215,8 @@ class MiniMartPOS {
             let name = $(this).attr('data-item-name') || "";
             let code = $(this).attr('data-item-code') || "";
             let group = $(this).attr('data-item-group') || "";
-            let qty = flt($(this).attr('data-actual-qty'));
-            let match = (name.includes(keyword) || code.includes(keyword)) && 
-                        (selected_group === "" || group === selected_group) && (qty > 0);
+            let match = (name.includes(keyword) || code.includes(keyword)) &&
+                        (selected_group === "" || group === selected_group);
             $(this).toggle(match);
         });
     }
@@ -254,24 +252,12 @@ class MiniMartPOS {
     }
 
     handle_fetched_item(item) {
-        if (flt(item.actual_qty) <= 0) {
-            frappe.show_alert({message: __('Out of stock'), indicator: 'red'});
-        } else {
-            this.add_to_cart(item);
-            frappe.utils.play_sound("submit");
-        }
+        this.add_to_cart(item);
+        frappe.utils.play_sound("submit");
         this.focus_input();
     }
 
     async add_to_cart(item) {
-        let $card = this.get_product_card(item.item_code, item.uom);
-        let current_displayed_stock = flt($card.attr('data-actual-qty'));
-        if (current_displayed_stock <= 0) {
-            frappe.show_alert({message: __('Out of stock!'), indicator: 'red'});
-            $card.hide();
-            return;
-        }
-
         // UOM/price cache per item_code
         if (!this.uom_cache) this.uom_cache = {};
         if (!this.uom_cache[item.item_code]) {
@@ -374,6 +360,69 @@ class MiniMartPOS {
         d.show();
     }
 
+    open_item_price_modal(index) {
+        let item = this.cart[index];
+        if (!item) return;
+
+        let me = this;
+        let d = new frappe.ui.Dialog({
+            title: __('Set Item Price'),
+            fields: [
+                {
+                    fieldtype: 'Currency',
+                    fieldname: 'price',
+                    label: __('Price'),
+                    default: flt(item.price),
+                    reqd: 1
+                }
+            ],
+            primary_action_label: __('Save Price'),
+            primary_action(values) {
+                let price = flt(values.price);
+                if (price < 0) {
+                    frappe.msgprint({
+                        title: __('Invalid Price'),
+                        indicator: 'red',
+                        message: __('Price cannot be negative.')
+                    });
+                    return;
+                }
+
+                frappe.call({
+                    method: "minimart_pos.api.add_item_price_history",
+                    args: {
+                        item_code: item.item_code,
+                        uom: item.uom,
+                        price: price
+                    },
+                    freeze: true,
+                    callback: (r) => {
+                        if (!r.message) return;
+
+                        let updatedUoms = r.message.uoms || [];
+                        if (!me.uom_cache) me.uom_cache = {};
+                        me.uom_cache[item.item_code] = updatedUoms;
+
+                        item.uoms = updatedUoms;
+                        item.price = price;
+
+                        let currentUomRow = updatedUoms.find(row => row.uom === item.uom);
+                        if (currentUomRow) {
+                            item.price = flt(currentUomRow.price);
+                        }
+
+                        d.hide();
+                        me.render_cart();
+                        me.load_products();
+                        frappe.show_alert({ message: __('Item price saved'), indicator: 'green' });
+                    }
+                });
+            }
+        });
+
+        d.show();
+    }
+
     sync_grid_stock() {
         this.refresh_all_card_stock_displays();
     }
@@ -429,6 +478,36 @@ class MiniMartPOS {
         return $card.length ? flt($card.attr('data-base-actual-qty')) : 0;
     }
 
+    get_product_name(item_code) {
+        let $card = this.get_product_card(item_code);
+        return ($card.attr('data-item-name') || item_code).trim();
+    }
+
+    get_checkout_stock_issues() {
+        let tracked_codes = new Set();
+
+        this.cart.forEach(cart_item => {
+            tracked_codes.add(cart_item.item_code);
+            (cart_item.bundle_components || []).forEach(component => tracked_codes.add(component.item_code));
+        });
+
+        return Array.from(tracked_codes).reduce((issues, item_code) => {
+            let available_qty = this.get_base_stock_qty(item_code);
+            let required_qty = this.get_reserved_stock_qty(item_code);
+
+            if (required_qty > available_qty) {
+                issues.push({
+                    item_code,
+                    item_name: this.get_product_name(item_code),
+                    available_qty,
+                    required_qty
+                });
+            }
+
+            return issues;
+        }, []);
+    }
+
     get_remaining_bundle_qty(bundle_components) {
         if (!bundle_components.length) return 0;
 
@@ -474,11 +553,8 @@ class MiniMartPOS {
         $card.attr('data-actual-qty', displayed_stock);
         $card.find('.stock-badge').text(this.format_stock_qty(displayed_stock, display_conversion));
 
-        let badge_class = displayed_stock <= 5 ? 'bg-warning' : 'bg-success';
-        $card.find('.stock-badge').removeClass('bg-warning bg-success').addClass(badge_class);
-
-        if (displayed_stock <= 0) $card.hide();
-        else $card.show();
+        let badge_class = displayed_stock <= 0 ? 'bg-danger' : (displayed_stock <= 5 ? 'bg-warning' : 'bg-success');
+        $card.find('.stock-badge').removeClass('bg-danger bg-warning bg-success').addClass(badge_class);
     }
 
     format_stock_qty(quantity, conversion=1) {
@@ -496,9 +572,6 @@ class MiniMartPOS {
 
     update_qty(index, delta) {
         let item = this.cart[index];
-        let $card = this.get_product_card(item.item_code, item.uom);
-        let current_displayed_stock = flt($card.attr('data-actual-qty'));
-        if (delta > 0 && current_displayed_stock <= 0) return;
         item.qty = flt(item.qty) + delta;
         if (item.qty <= 0) {
             this.cart.splice(index, 1);
@@ -509,14 +582,6 @@ class MiniMartPOS {
 
     manual_qty_update(index, value) {
         let item = this.cart[index];
-        let diff = flt(value) - item.qty;
-        let $card = this.get_product_card(item.item_code, item.uom);
-        let current_displayed_stock = flt($card.attr('data-actual-qty'));
-        if (diff > current_displayed_stock) {
-            frappe.show_alert({message: __('Insufficient Stock'), indicator: 'orange'});
-            this.render_cart();
-            return;
-        }
         item.qty = flt(value);
         if (item.qty <= 0) {
             this.cart.splice(index, 1);
@@ -531,6 +596,7 @@ class MiniMartPOS {
             let linePrice = flt(item.price) * (1 - (discount_pct / 100));
             if (linePrice < 0) linePrice = 0;
             let lineTotal = (item.qty * linePrice).toFixed(2);
+            let priceButtonClass = flt(item.price) <= 0 ? 'price-btn price-btn-zero' : 'price-btn';
             // UOM selector dropdown
             let uom_selector = '';
             if (item.uoms && item.uoms.length > 1) {
@@ -542,7 +608,13 @@ class MiniMartPOS {
             }
             return `
             <div class="cart-row">
-                <div class="cart-item-name">${item.item_name}</div>
+                <div class="cart-item-line cart-item-line-header">
+                    <div class="cart-item-name">${item.item_name}</div>
+                    <div class="item-total">
+                        <span class="item-total-label">${__('Total')}</span>
+                        <span class="item-total-value">₱${lineTotal}</span>
+                    </div>
+                </div>
                 <div class="cart-item-line cart-item-line-controls">
                     <div class="qty-controls">
                         <button onclick="pos_instance.update_qty(${index}, -1)" class="btn-qty">-</button>
@@ -550,16 +622,13 @@ class MiniMartPOS {
                         <button onclick="pos_instance.update_qty(${index}, 1)" class="btn-qty">+</button>
                     </div>
                     <div class="uom-selector-wrapper">${uom_selector}</div>
+                    <button type="button" class="${priceButtonClass}" onclick="pos_instance.open_item_price_modal(${index})" title="${__('Edit Price')}">
+                        ₱${flt(item.price).toFixed(2)}
+                    </button>
                     <div class="discount-input-wrapper">
                         <button type="button" class="discount-btn" onclick="pos_instance.open_item_discount_modal(${index})">
                             ${flt(item.discount_pct || 0).toFixed(0)}% <i class="fa fa-percent"></i>
                         </button>
-                    </div>
-                </div>
-                <div class="cart-item-line cart-item-line-summary">
-                    <div class="item-total">
-                        <span class="item-total-label">${__('Total')}</span>
-                        <span class="item-total-value">₱${lineTotal}</span>
                     </div>
                     <button onclick="pos_instance.void_cart_item(${index})" class="btn-remove" title="${__('Void Item')}">×</button>
                 </div>
@@ -934,6 +1003,25 @@ class MiniMartPOS {
                 title: __('Missing Customer'),
                 indicator: 'red',
                 message: __('Please select a customer or choose Guest before checkout.')
+            });
+            return;
+        }
+
+        let stock_issues = this.get_checkout_stock_issues();
+        if (stock_issues.length) {
+            let issue_lines = stock_issues.slice(0, 5).map(issue =>
+                `${frappe.utils.escape_html(issue.item_name)}: ${__('Available')} ${flt(issue.available_qty).toFixed(2)}, ${__('In Cart')} ${flt(issue.required_qty).toFixed(2)}`
+            );
+            let more_count = stock_issues.length - issue_lines.length;
+            let more_text = more_count > 0 ? `<br>${__('and {0} more item(s).', [more_count])}` : '';
+
+            frappe.msgprint({
+                title: __('Hold Sale Needed'),
+                indicator: 'orange',
+                message: __('This cart cannot be checked out because some items do not have enough stock. Use Hold Sale instead.<br><br>{0}{1}', [
+                    issue_lines.join('<br>'),
+                    more_text
+                ])
             });
             return;
         }

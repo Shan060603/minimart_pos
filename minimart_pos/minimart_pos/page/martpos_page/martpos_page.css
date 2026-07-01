@@ -138,17 +138,18 @@ html, body {
     background: white;
     border: 1px solid #d1d8dd;
     border-radius: 12px;
-    padding: 28px 8px 8px;
+    padding: 28px 10px 10px;
     text-align: center;
     cursor: pointer;
     transition: all 0.2s ease;
     display: flex;
     flex-direction: column;
     height: auto;
-    justify-content: center;
+    justify-content: flex-start;
+    gap: 4px;
     position: relative;
     -webkit-touch-callout: none;
-    min-height: 140px;
+    min-height: 190px;
 }
 
 .product-card:hover {
@@ -187,6 +188,8 @@ html, body {
     word-break: break-word;
     line-height: 1.2;
     color: #171717;
+    min-height: 2.4em;
+    overflow-wrap: anywhere;
 }
 
 .product-uom {
@@ -195,12 +198,16 @@ html, body {
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: #6c757d;
+    min-height: 1.2em;
 }
 
 .product-price {
     font-size: 1rem;
     font-weight: 700;
     color: #27ae60;
+    margin-top: auto;
+    line-height: 1.2;
+    padding-top: 2px;
 }
 
 .product-image {
@@ -280,13 +287,14 @@ html, body {
     align-items: center;
 }
 
-.cart-item-line-controls {
-    grid-template-columns: auto minmax(72px, auto) 70px;
-    justify-content: start;
+.cart-item-line-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
 }
 
-.cart-item-line-summary {
-    grid-template-columns: minmax(0, 1fr) auto;
+.cart-item-line-controls {
+    grid-template-columns: auto minmax(72px, auto) minmax(84px, auto) 70px auto;
+    justify-content: start;
 }
 
 .qty-controls {
@@ -319,6 +327,31 @@ html, body {
     justify-content: center;
     gap: 4px;
     padding: 0 10px;
+}
+
+.price-btn {
+    min-width: 84px;
+    height: 34px;
+    border: 1px solid #d1d8dd;
+    border-radius: 8px;
+    background: #f8f9fa;
+    color: #171717;
+    font-weight: 700;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 10px;
+}
+
+.price-btn:hover {
+    background: #e9ecef;
+}
+
+.price-btn-zero {
+    border-color: #f39c12;
+    color: #8a5200;
+    background: #fff3cd;
 }
 
 .discount-btn:hover {
@@ -367,6 +400,7 @@ html, body {
     display: flex;
     align-items: baseline;
     justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 6px;
     text-align: right;
     min-width: 0;
