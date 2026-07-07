@@ -692,45 +692,35 @@ class MiniMartPOS {
 				let lineTotal = (item.qty * linePrice).toFixed(2);
 				let priceButtonClass =
 					flt(item.price) <= 0 ? "price-btn price-btn-zero" : "price-btn";
-				let uom_display =
-					item.uom || (item.uoms && item.uoms.length ? item.uoms[0].uom : "");
+
 				// UOM selector dropdown
 				let uom_selector = "";
 				if (item.uoms && item.uoms.length > 1) {
 					uom_selector = `<select class="cart-uom-select" data-index="${index}">
-                    ${item.uoms.map((u) => `<option value="${u.uom}" ${u.uom === item.uom ? "selected" : ""}>${u.uom}</option>`).join("")}
+                    ${item.uoms
+						.map(
+							(u) =>
+								`<option value="${u.uom}" ${u.uom === item.uom ? "selected" : ""}>${u.uom}</option>`,
+						)
+						.join("")}
                 </select>`;
 				} else if (item.uoms && item.uoms.length === 1) {
 					uom_selector = `<span class="cart-uom-label">${item.uoms[0].uom}</span>`;
 				}
+
 				return `
             <div class="cart-row">
                 <div class="cart-item-line cart-item-line-header">
                     <div class="cart-item-name">${item.item_name}</div>
                     <div class="item-total">
-                        <span class="item-total-label">${__("Total")}</span>
                         <span class="item-total-value">₱${lineTotal}</span>
                     </div>
                 </div>
-                <div class="cart-item-line cart-item-line-meta">
-                    <div class="cart-item-meta">
-                        <div class="cart-item-meta-item">
-                            <span class="meta-label">${__("UOM")}</span>
-                            <span class="meta-value">${uom_display}</span>
-                        </div>
-                        <div class="cart-item-meta-item">
-                            <span class="meta-label">${__("Rate")}</span>
-                            <span class="meta-value">₱${flt(item.price).toFixed(2)}</span>
-                        </div>
-                    </div>
-                </div>
+
                 <div class="cart-item-line cart-item-line-controls">
 
     <div class="qty-controls">
-        <span class="qty-label">${__("Qty")}</span>
-
-        <button onclick="pos_instance.update_qty(${index}, -1)"
-            class="btn-qty">-</button>
+        <button onclick="pos_instance.update_qty(${index}, -1)" class="btn-qty">-</button>
 
         <input
             type="number"
@@ -739,8 +729,7 @@ class MiniMartPOS {
             min="1"
             onchange="pos_instance.manual_qty_update(${index}, this.value)">
 
-        <button onclick="pos_instance.update_qty(${index}, 1)"
-            class="btn-qty">+</button>
+        <button onclick="pos_instance.update_qty(${index}, 1)" class="btn-qty">+</button>
     </div>
 
     <div class="uom-selector-wrapper">
@@ -751,20 +740,23 @@ class MiniMartPOS {
 
         <button
             class="${priceButtonClass}"
-            onclick="pos_instance.open_item_price_modal(${index})">
+            onclick="pos_instance.open_item_price_modal(${index})"
+            title="Set Rate">
             ₱${flt(item.price).toFixed(2)}
         </button>
 
         <button
             class="discount-btn"
-            onclick="pos_instance.open_item_discount_modal(${index})">
+            onclick="pos_instance.open_item_discount_modal(${index})"
+            title="Set Discount">
             ${flt(item.discount_pct || 0).toFixed(0)}%
         </button>
 
         <button
             onclick="pos_instance.void_cart_item(${index})"
-            class="btn-remove">
-            ${__("Remove")}
+            class="btn-remove btn-remove-square"
+            title="Remove Item">
+            ×
         </button>
 
     </div>

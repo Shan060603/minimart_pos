@@ -530,20 +530,41 @@ def hold_sale(cart, customer=None, grand_total=0, remarks=None, held_sale_name=N
 
 @frappe.whitelist()
 def get_held_sales():
-	"""Return active held sales for the current cashier and POS profile."""
-	profile = get_assigned_pos_profile()
-	return frappe.get_all(
-		"Mart POS Held Sale",
-		filters={
-			"status": "Held",
-			"cashier": frappe.session.user,
-			"company": profile.company,
-			"warehouse": profile.warehouse,
-		},
-		fields=["name", "customer", "grand_total", "created_on", "remarks"],
-		order_by="created_on desc",
-		limit=50,
-	)
+    """Return active held sales for the current cashier and POS profile."""
+    profile = get_assigned_pos_profile()
+
+    sales = frappe.get_all(
+        "Mart POS Held Sale",
+        filters={
+            "status": "Held",
+            "cashier": frappe.session.user,
+            "company": profile.company,
+            "warehouse": profile.warehouse,
+        },
+        fields=[
+            "name",
+            "customer",
+            "grand_total",
+            "created_on",
+            "remarks",
+            "cart_data",
+        ],
+        order_by="created_on desc",
+        limit=50,
+    )
+
+    for sale in sales:
+        try:
+            cart = json.loads(sale.get("cart_data") or "[]")
+            sale["item_count"] = sum(
+                float(item.get("qty", 0)) for item in cart
+            )
+        except Exception:
+            sale["item_count"] = 0
+
+        sale.pop("cart_data", None)
+
+    return sales
 
 
 @frappe.whitelist()
