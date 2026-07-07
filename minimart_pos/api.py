@@ -201,7 +201,7 @@ def get_bundle_available_qty(components):
 	return min(possible_qty) if possible_qty else 0
 
 
-def get_catalog_rows(profile, item_code=None, search_term=None, item_group=None, limit_page_length=None):
+def get_catalog_rows(profile, item_code=None, search_term=None, item_group=None, limit_page_length=None, in_stock_only=True):
 	pricing_date = get_current_pricing_date()
 	conditions = [
 		"i.disabled = 0",
@@ -210,6 +210,11 @@ def get_catalog_rows(profile, item_code=None, search_term=None, item_group=None,
 		"(i.is_stock_item = 1 OR EXISTS (SELECT 1 FROM `tabProduct Bundle` pb WHERE pb.name = i.name AND pb.disabled = 0))",
 	]
 	values = [profile.selling_price_list, pricing_date, pricing_date, pricing_date, pricing_date]
+
+	warehouse = (profile.warehouse or "").strip()
+	if in_stock_only and warehouse:
+		conditions.append("EXISTS (SELECT 1 FROM `tabBin` b WHERE b.item_code = i.name AND b.warehouse = %s AND b.actual_qty > 0)")
+		values.append(warehouse)
 
 	if item_code:
 		conditions.append("i.name = %s")
@@ -221,8 +226,10 @@ def get_catalog_rows(profile, item_code=None, search_term=None, item_group=None,
 
 	if search_term:
 		like_query = f"%{search_term}%"
-		conditions.append("(i.name = %s OR i.name LIKE %s OR i.item_name LIKE %s)")
-		values.extend([search_term, like_query, like_query])
+		conditions.append(
+			"(i.name = %s OR i.name LIKE %s OR i.item_name LIKE %s OR EXISTS (SELECT 1 FROM `tabItem Barcode` ib WHERE ib.parent = i.name AND ib.barcode = %s))"
+		)
+		values.extend([search_term, like_query, like_query, search_term])
 
 	order_by = "i.item_name ASC, conversion_factor ASC"
 	if search_term:
@@ -399,8 +406,11 @@ def create_opening_entry(pos_profile, amount=0):
 
 
 @frappe.whitelist()
-def get_products(search_term=None, item_group=None, limit_page_length=20):
+def get_products(search_term=None, item_group=None, limit_page_length=20, in_stock_only=True):
 	"""Fetches saleable POS items, including product bundles with computed availability."""
+	if isinstance(in_stock_only, str):
+		in_stock_only = in_stock_only.strip().lower() in {"1", "true", "yes", "y", "on"}
+
 	profile = get_assigned_pos_profile()
 	search_term = (search_term or "").strip()
 	item_group = (item_group or "").strip()
@@ -410,6 +420,7 @@ def get_products(search_term=None, item_group=None, limit_page_length=20):
 		search_term=search_term or None,
 		item_group=item_group or None,
 		limit_page_length=limit_page_length,
+		in_stock_only=in_stock_only,
 	)
 	if not rows:
 		return []
@@ -452,7 +463,7 @@ def get_item_by_barcode(barcode):
 
 	if item_code:
 		profile = get_assigned_pos_profile()
-		item_data = get_catalog_rows(profile, item_code=item_code)
+		item_data = get_catalog_rows(profile, item_code=item_code, in_stock_only=False)
 		if not item_data:
 			return None
 
@@ -469,7 +480,7 @@ def search_item(query):
 		return None
 
 	profile = get_assigned_pos_profile()
-	items = get_catalog_rows(profile, search_term=query)
+	items = get_catalog_rows(profile, search_term=query, in_stock_only=False)
 	for row in items:
 		return enrich_pos_item(row, profile.warehouse)
 	return None

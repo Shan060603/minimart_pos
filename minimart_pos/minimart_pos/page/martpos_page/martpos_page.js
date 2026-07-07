@@ -78,7 +78,7 @@ class MiniMartPOS {
         this.setup_customer_control();
         this.bind_events();
         this.load_item_groups();
-        this.load_products();
+        this.load_products("", true);
         this.load_recent_orders();
         this.focus_input();
     }
@@ -131,7 +131,11 @@ class MiniMartPOS {
         this.$scan_input.on('keydown', handleBarcodeScan);
 
         this.$scan_input.on('input', () => this.schedule_product_refresh());
-        this.$group_filter.on('change', () => { this.load_products(); this.focus_input(); });
+        this.$group_filter.on('change', () => {
+            let search_term = this.$scan_input.val().trim();
+            this.load_products(search_term, !search_term);
+            this.focus_input();
+        });
 
         $(document).on('click', (e) => {
             if (!$(e.target).closest('#barcode-scan, #item-group-filter, #customer-search-container, .awesomplete, .modal-dialog, .cart-qty-input, .cart-uom-select, .price-btn, .discount-btn, .btn-qty, .btn-remove, .num-btn, .quick-btn').length) {
@@ -171,18 +175,23 @@ class MiniMartPOS {
 
     schedule_product_refresh() {
         clearTimeout(this.product_search_timer);
-        this.product_search_timer = setTimeout(() => this.load_products(), 180);
+        this.product_search_timer = setTimeout(() => {
+            let search_term = this.$scan_input.val().trim();
+            this.load_products(search_term, !search_term);
+        }, 180);
     }
 
-    load_products() {
-        let search_term = this.$scan_input.val().trim();
+    load_products(search_term = "", in_stock_only = true) {
         let item_group = this.$group_filter.val();
+        let normalized_search_term = (search_term || "").trim();
+        let normalized_in_stock_only = in_stock_only !== null && in_stock_only !== undefined ? in_stock_only : !normalized_search_term;
         frappe.call({
             method: "minimart_pos.api.get_products",
             args: {
-                search_term: search_term,
+                search_term: normalized_search_term,
                 item_group: item_group,
-                limit_page_length: this.product_result_limit
+                limit_page_length: this.product_result_limit,
+                in_stock_only: normalized_in_stock_only
             },
             callback: (r) => { if (r.message) this.render_products(r.message); }
         });
