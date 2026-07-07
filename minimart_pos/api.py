@@ -835,7 +835,91 @@ def void_invoice(invoice_name):
 
 
 @frappe.whitelist()
+def delete_held_sales(names):
+	"""Delete held sales by name, enforcing ownership to the current POS profile + cashier."""
+	if not names:
+		return {"deleted": 0}
+
+	# Accept either JSON string or list
+	if isinstance(names, str):
+		try:
+			names = json.loads(names)
+		except Exception:
+			names = [names]
+
+
+
+
+	if not isinstance(names, (list, tuple)):
+
+		names = [names]
+
+	profile = get_assigned_pos_profile()
+	cashier = frappe.session.user
+
+	# Only delete sales that are still Held and owned by current cashier + POS profile
+	allowed = frappe.get_all(
+		"Mart POS Held Sale",
+		filters={
+			"name": ["in", list(names)],
+			"status": "Held",
+			"cashier": cashier,
+			"company": profile.company,
+			"warehouse": profile.warehouse,
+		},
+		pluck="name",
+	)
+
+	allowed = list(set(allowed))
+	if allowed:
+		# Delete only the allowed/owned names
+		for name in allowed:
+			frappe.delete_doc("Mart POS Held Sale", name, ignore_permissions=True)
+
+
+
+
+	deleted_count = len(allowed)
+	frappe.db.commit()
+	return {"deleted": deleted_count, "requested": len(names), "allowed": deleted_count}
+
+
+
+
+@frappe.whitelist()
+def delete_all_held_sales():
+	"""Delete all held sales owned by the current POS profile + current cashier."""
+	profile = get_assigned_pos_profile()
+	cashier = frappe.session.user
+
+
+	rows = frappe.get_all(
+		"Mart POS Held Sale",
+		filters={
+			"status": "Held",
+			"cashier": cashier,
+			"company": profile.company,
+			"warehouse": profile.warehouse,
+		},
+		pluck="name",
+	)
+
+	rows = list(set(rows or []))
+	if rows:
+		for name in rows:
+			frappe.delete_doc("Mart POS Held Sale", name)
+
+	frappe.db.commit()
+	return {"deleted": len(rows)}
+
+
+
+
+
+
+@frappe.whitelist()
 def get_recent_invoices(opening_entry):
+
 	return frappe.db.get_list(
 		"Sales Invoice",
 		filters={"owner": frappe.session.user, "docstatus": 1},
@@ -852,6 +936,7 @@ def get_recent_invoices(opening_entry):
 		order_by="creation desc",
 		limit=20,
 	)
+
 
 
 @frappe.whitelist()

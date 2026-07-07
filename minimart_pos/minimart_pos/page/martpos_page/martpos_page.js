@@ -921,59 +921,298 @@ class MiniMartPOS {
 	}
 
 	render_held_sales_dialog(held_sales) {
+		this.held_sales_cache = held_sales || [];
 		let d = new frappe.ui.Dialog({
 			title: __("Held Sales"),
 			fields: [
 				{
 					fieldtype: "HTML",
 					fieldname: "held_sales_html",
-					options: this.get_held_sales_html(held_sales),
+					options: this.get_held_sales_management_html(this.held_sales_cache),
 				},
 			],
 		});
 
-		d.on_page_show = () => {
-			d.$wrapper.find(".held-sale-row").on("click", (e) => {
-				let name = $(e.currentTarget).attr("data-name");
-				this.restore_held_sale(name, d);
-			});
+		// keep references on instance for handlers
+		this.$held_sales_dialog = d;
+		this.held_sales_selected = new Set();
+
+		const refresh_dialog_view = () => {
+			d.fields_dict.held_sales_html.$wrapper.html(
+				this.get_held_sales_management_html(this.held_sales_cache),
+			);
+			this.bind_held_sales_dialog_events(d);
 		};
 
+		this.bind_held_sales_dialog_events(d);
 		d.show();
 	}
 
-	get_held_sales_html(held_sales) {
-		if (!held_sales.length) {
-			return `<div class="text-center text-muted p-3">${__("No held sales")}</div>`;
+	get_held_sales_management_html(held_sales) {
+		const sales = held_sales || [];
+		return `
+			<div class="held-sales-management">
+				<div class="d-flex gap-2 align-items-center mb-2">
+					<input type="text" class="form-control held-sales-search" placeholder="${__(
+						"Search customer / held sale id",
+					)}" />
+					<button type="button" class="btn btn-sm btn-outline-secondary held-sales-clear-selection">
+						${__("Clear")}
+					</button>
+				</div>
+
+				<div class="d-flex justify-content-between align-items-center mb-2">
+					<div class="form-check">
+						<input class="form-check-input held-sales-select-all" type="checkbox" id="held-sales-select-all" />
+						<label class="form-check-label" for="held-sales-select-all">${__("Select All")}</label>
+					</div>
+					<div class="text-muted small" id="held-sales-selected-count">${__("Selected: 0")}</div>
+				</div>
+
+				<div class="held-sales-actions d-flex gap-2 flex-wrap mb-2">
+					<button type="button" class="btn btn-primary btn-sm held-sales-resume">${__("Resume Selected")}</button>
+					<button type="button" class="btn btn-danger btn-sm held-sales-delete-selected">${__("Delete Selected")}</button>
+					<button type="button" class="btn btn-outline-danger btn-sm held-sales-delete-all">${__("Delete All")}</button>
+				</div>
+
+				<div class="held-sales-list" style="max-height: 420px; overflow:auto;">
+					${
+						sales.length
+							? `
+							<div class="list-group">
+								${sales
+									.map((sale) => {
+										const name = this.escape_html(sale.name);
+										const customer = this.escape_html(
+											sale.customer || __("Guest"),
+										);
+										const created_on = this.escape_html(
+											frappe.datetime.str_to_user(sale.created_on),
+										);
+										const item_count = flt(sale.item_count || 0).toFixed(0);
+										const total_amount = flt(sale.grand_total).toFixed(2);
+										return `
+												<div class="list-group-item held-sales-row" data-name="${name}" style="user-select:none;">
+													<div class="d-flex align-items-center gap-2">
+														<input type="checkbox" class="form-check-input held-sales-checkbox" data-name="${name}" />
+														<div class="flex-grow-1">
+															<div class="d-flex justify-content-between align-items-center">
+																<strong class="held-sales-id">${name}</strong>
+																<span class="held-sales-total">₱${total_amount}</span>
+															</div>
+															<div class="d-flex justify-content-between text-muted small mt-1">
+																<span class="held-sales-customer">${customer}</span>
+																<span class="held-sales-created">${created_on}</span>
+															</div>
+															<div class="text-muted small mt-1">${__("Items")}: ${item_count}</div>
+														</div>
+													</div>
+												</div>
+											`;
+									})
+									.join("")}
+							</div>
+							`
+							: `<div class="text-center text-muted p-3">${__("No held sales")}</div>`
+					}
+				</div>
+			</div>
+		`;
+	}
+
+	bind_held_sales_dialog_events(d) {
+		const $wrapper = d.$wrapper;
+		const me = this;
+
+		// search (client-side only)
+		$wrapper
+			.find(".held-sales-search")
+			.off("input")
+			.on("input", function () {
+				me.apply_held_sales_filter($(this).val());
+				me.sync_select_all_checkbox();
+			});
+
+		// clear selection button
+		$wrapper
+			.find(".held-sales-clear-selection")
+			.off("click")
+			.on("click", () => {
+				me.held_sales_selected = new Set();
+				me.refresh_selected_count();
+				$wrapper.find(".held-sales-checkbox").prop("checked", false);
+				me.sync_select_all_checkbox();
+			});
+
+		// select all (visible rows only)
+		$wrapper
+			.find(".held-sales-select-all")
+			.off("change")
+			.on("change", (e) => {
+				const checked = e.target.checked;
+				$wrapper.find(".held-sales-row:visible").each((_, row) => {
+					const $row = $(row);
+					const name = $row.attr("data-name");
+					$row.find(".held-sales-checkbox").prop("checked", checked);
+					if (checked) me.held_sales_selected.add(name);
+					else me.held_sales_selected.delete(name);
+				});
+				me.refresh_selected_count();
+			});
+
+		// per-row checkbox selection
+		$wrapper
+			.find(".held-sales-checkbox")
+			.off("change")
+			.on("change", function (e) {
+				e.stopPropagation();
+				const name = $(this).attr("data-name");
+				if (this.checked) me.held_sales_selected.add(name);
+				else me.held_sales_selected.delete(name);
+
+				me.refresh_selected_count();
+				me.sync_select_all_checkbox();
+			});
+
+		// Resume Selected
+		$wrapper
+			.find(".held-sales-resume")
+			.off("click")
+			.on("click", () => {
+				const selected = Array.from(me.held_sales_selected);
+				if (!selected.length) {
+					frappe.msgprint({
+						title: __("Resume Held Sale"),
+						indicator: "orange",
+						message: __("Please select a held sale."),
+					});
+					return;
+				}
+				if (selected.length > 1) {
+					frappe.msgprint({
+						title: __("Resume Held Sale"),
+						indicator: "orange",
+						message: __("Please select only one held sale to resume."),
+					});
+					return;
+				}
+
+				me.restore_held_sale(selected[0], d);
+			});
+
+		// Delete Selected
+		$wrapper
+			.find(".held-sales-delete-selected")
+			.off("click")
+			.on("click", () => {
+				const selected = Array.from(me.held_sales_selected);
+				if (!selected.length) {
+					frappe.msgprint({
+						title: __("Delete Held Sales"),
+						indicator: "orange",
+						message: __("Please select held sale(s) to delete."),
+					});
+					return;
+				}
+
+				frappe.confirm(
+					__("Delete {0} held sale(s)? This action cannot be undone.", [
+						selected.length,
+					]),
+					() => {
+						frappe.call({
+							method: "minimart_pos.api.delete_held_sales",
+							args: { names: selected },
+							freeze: true,
+							callback: () => {
+								// refresh dialog afterwards
+								frappe.call({
+									method: "minimart_pos.api.get_held_sales",
+									callback: (r) => {
+										d.hide();
+										this.show_held_sales();
+									},
+								});
+							},
+						});
+					},
+				);
+			});
+
+		// Delete All
+		$wrapper
+			.find(".held-sales-delete-all")
+			.off("click")
+			.on("click", () => {
+				frappe.confirm(__("Delete ALL held sales? This action cannot be undone."), () => {
+					frappe.call({
+						method: "minimart_pos.api.delete_all_held_sales",
+						freeze: true,
+						callback: () => {
+							frappe.call({
+								method: "minimart_pos.api.get_held_sales",
+								callback: () => {
+									d.hide();
+									this.show_held_sales();
+								},
+							});
+						},
+					});
+				});
+			});
+
+		// prevent row click resume (do nothing on row click)
+		$wrapper.find(".held-sales-row").off("click");
+
+		// initial sync
+		this.refresh_selected_count();
+		this.sync_select_all_checkbox();
+	}
+
+	apply_held_sales_filter(term) {
+		const $rows = this.$held_sales_dialog.$wrapper.find(".held-sales-row");
+		const q = (term || "").trim().toLowerCase();
+		if (!q) {
+			$rows.show();
+			return;
 		}
 
-		return `
-            <div class="list-group">
-                ${held_sales
-					.map((sale) => {
-						const name = this.escape_html(sale.name);
-						const customer = this.escape_html(sale.customer || __("Guest"));
-						const remarks = this.escape_html(sale.remarks);
-						const created_on = this.escape_html(
-							frappe.datetime.str_to_user(sale.created_on),
-						);
-						return `
-                    <button type="button" class="list-group-item list-group-item-action held-sale-row" data-name="${name}">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <strong>${name}</strong>
-                            <span>₱${flt(sale.grand_total).toFixed(2)}</span>
-                        </div>
-                        <div class="d-flex justify-content-between text-muted small mt-1">
-                            <span>${customer}</span>
-                            <span>${created_on}</span>
-                        </div>
-                        ${sale.remarks ? `<div class="text-muted small mt-1">${remarks}</div>` : ""}
-                    </button>
-                `;
-					})
-					.join("")}
-            </div>
-        `;
+		$rows.each((_, row) => {
+			const $row = $(row);
+			const name = ($row.attr("data-name") || "").toLowerCase();
+			const customer = ($row.find(".held-sales-customer").text() || "").toLowerCase();
+			const match = customer.includes(q) || name.includes(q);
+			$row.toggle(Boolean(match));
+		});
+	}
+
+	sync_select_all_checkbox() {
+		if (!this.$held_sales_dialog) return;
+		const $wrapper = this.$held_sales_dialog.$wrapper;
+		const $visibleRows = $wrapper.find(".held-sales-row:visible");
+		const $selectAll = $wrapper.find(".held-sales-select-all");
+		if (!$visibleRows.length) {
+			$selectAll.prop("checked", false);
+			return;
+		}
+
+		let allSelected = true;
+		$visibleRows.each((_, row) => {
+			const name = $(row).attr("data-name");
+			if (!this.held_sales_selected.has(name)) {
+				allSelected = false;
+				return false;
+			}
+		});
+		$selectAll.prop("checked", allSelected);
+	}
+
+	refresh_selected_count() {
+		if (!this.$held_sales_dialog) return;
+		const $wrapper = this.$held_sales_dialog.$wrapper;
+		$wrapper
+			.find("#held-sales-selected-count")
+			.text(__("Selected: {0}", [this.held_sales_selected.size]));
 	}
 
 	escape_html(value) {

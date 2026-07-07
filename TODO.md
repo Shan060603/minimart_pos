@@ -1,0 +1,14 @@
+- [x] Inspect existing Held Sales implementation (frontend: render_held_sales_dialog / restore_held_sale; backend: get_held_sales / get_held_sale)
+- [x] Add backend ownership-safe deletion APIs in minimart_pos/api.py:
+  - [x] delete_held_sales(names)
+  - [x] delete_all_held_sales()
+- [x] Replace Held Sales dialog UI with management dialog UI in martpos_page.js:
+  - [x] Client-side search
+  - [x] Checkbox selection + Select All (visible rows)
+  - [x] Resume Selected (exactly-one rule)
+  - [x] Delete Selected (confirmation + refresh)
+  - [x] Delete All (confirmation + refresh)
+  - [x] Prevent resume on row click
+- [x] Run checks:
+  - [x] python3 -m py_compile minimart_pos/api.py
+  - [x] node --check minimart_pos/minimart_pos/page/martpos_page/martpos_page.js
