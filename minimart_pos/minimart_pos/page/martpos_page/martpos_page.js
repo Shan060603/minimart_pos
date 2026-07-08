@@ -1283,163 +1283,168 @@ class MiniMartPOS {
 		});
 	}
 
-	load_recent_orders() {
-		frappe.call({
-			method: "minimart_pos.api.get_recent_invoices",
-			args: { opening_entry: this.shift_data.opening_entry },
-			callback: (r) => {
-				if (r.message) this.render_recent_orders(r.message);
-			},
-		});
-	}
-
-	render_recent_orders(orders) {
-		if (!orders.length) {
+		load_recent_orders() {
+			if (!this.shift_data.opening_entry) {
+				this.render_recent_orders([]);
+				return;
+			}
 			this.$recent_orders_list.html(
-				'<div class="text-center p-2 text-muted">No transactions</div>',
+				'<div class="text-center p-2 text-muted">Loading transactions...</div>',
 			);
-			return;
-		}
-		let html = orders
-			.map((order) => {
-				const invoice_name = this.escape_html(order.name);
-				const customer = this.escape_html(order.customer);
-				const status = this.escape_html(order.status || "");
-				const created_on = this.escape_html(frappe.datetime.str_to_user(order.creation));
-				const outstanding = flt(order.outstanding_amount);
-				return `
-            <button type="button" class="recent-order-item recent-transaction-item" data-invoice="${invoice_name}">
-                <div class="d-flex justify-content-between align-items-center">
-                    <span class="order-id">#${invoice_name.split("-").pop()}</span>
-                    <span class="order-total">₱${flt(order.grand_total).toFixed(2)}</span>
-                </div>
-                <div class="d-flex justify-content-between align-items-center mt-1">
-                    <span class="order-customer text-muted" style="font-size: 10px;">${customer}</span>
-                    <span class="text-muted" style="font-size: 10px;">${created_on}</span>
-                </div>
-                <div class="d-flex justify-content-between align-items-center mt-1">
-                    <span class="text-muted" style="font-size: 10px;">
-                        ${status}${outstanding > 0 ? ` · ${__("Outstanding")} ₱${outstanding.toFixed(2)}` : ""}
-                    </span>
-                    <span class="d-flex align-items-center gap-2">
-                        ${order.is_return ? `<span class="badge badge-warning">${__("Return")}</span>` : ""}
-                        <button type="button" class="btn btn-xs btn-default recent-reprint-btn" data-invoice="${invoice_name}">
-                            <i class="fa fa-print"></i> ${__("Reprint")}
-                        </button>
-                    </span>
-                </div>
-            </button>
-        `;
-			})
-			.join("");
-		this.$recent_orders_list.html(html);
-		this.$recent_orders_list
-			.find(".recent-transaction-item")
-			.off("click")
-			.on("click", (e) => {
-				this.show_transaction_menu($(e.currentTarget).attr("data-invoice"));
-			});
-		this.$recent_orders_list
-			.find(".recent-reprint-btn")
-			.off("click")
-			.on("click", (e) => {
-				e.preventDefault();
-				e.stopPropagation();
-				this.reprint_receipt($(e.currentTarget).attr("data-invoice"));
-			});
-	}
-
-	show_transaction_menu(invoice_name) {
-		if (!invoice_name) return;
-
-		let d = new frappe.ui.Dialog({
-			title: __("Transaction {0}", [invoice_name]),
-			fields: [
-				{
-					fieldtype: "HTML",
-					fieldname: "transaction_actions",
-					options: `
-                        <div class="transaction-action-list">
-                            <button type="button" class="btn btn-default btn-block text-left" data-action="reprint">
-                                <i class="fa fa-print mr-2"></i>${__("Reprint Receipt")}
-                            </button>
-                            <button type="button" class="btn btn-default btn-block text-left" data-action="return">
-                                <i class="fa fa-undo mr-2"></i>${__("Return Sale")}
-                            </button>
-                            <button type="button" class="btn btn-default btn-block text-left" data-action="payment">
-                                <i class="fa fa-money mr-2"></i>${__("Receive Payment")}
-                            </button>
-                            <button type="button" class="btn btn-default btn-block text-left" data-action="view">
-                                <i class="fa fa-file-text-o mr-2"></i>${__("View Invoice")}
-                            </button>
-                        </div>
-                    `,
+			frappe.call({
+				method: "minimart_pos.api.get_recent_invoices",
+				args: { opening_entry: this.shift_data.opening_entry },
+				callback: (r) => {
+					if (r.message) this.render_recent_orders(r.message);
 				},
-			],
-		});
-
-		d.on_page_show = () => {
-			d.$wrapper.find('[data-action="reprint"]').on("click", () => {
-				d.hide();
-				this.reprint_receipt(invoice_name);
 			});
-			d.$wrapper.find('[data-action="return"]').on("click", () => {
-				d.hide();
-				this.return_sale(invoice_name);
+		}
+
+		render_recent_orders(orders) {
+			if (!orders.length) {
+				this.$recent_orders_list.html(
+					'<div class="text-center p-2 text-muted">No transactions</div>',
+				);
+				return;
+			}
+			let html = orders
+				.map((order) => {
+					const invoice_doctype = this.escape_html(order.doctype || "POS Invoice");
+					const pos_invoice_name = order.pos_invoice_name;
+					if (!pos_invoice_name) return "";
+					const escaped_pos_invoice_name = this.escape_html(pos_invoice_name);
+					const display_id = this.escape_html(order.display_id || "");
+					const customer = this.escape_html(order.customer);
+					const posting_datetime = [order.posting_date, order.posting_time]
+						.filter(Boolean)
+						.join(" ");
+					const posted_on = this.escape_html(frappe.datetime.str_to_user(posting_datetime));
+					const paid_amount = flt(order.paid_amount);
+					const outstanding = flt(order.outstanding_amount);
+					let payment_status = __("Paid");
+					if (paid_amount > 0 && outstanding > 0) {
+						payment_status = `${__("Partly Paid")} - ${__("Outstanding")} ₱${outstanding.toFixed(2)}`;
+					} else if (paid_amount === 0 && outstanding > 0) {
+						payment_status = `${__("Unpaid")} - ${__("Outstanding")} ₱${outstanding.toFixed(2)}`;
+					}
+					payment_status = this.escape_html(payment_status);
+					return `
+						<button type="button" class="recent-order-item recent-transaction-item" data-doctype="${invoice_doctype}" data-pos-name="${escaped_pos_invoice_name}">
+							<div class="d-flex justify-content-between align-items-center">
+								<span class="order-id">${display_id}</span>
+								<span class="order-total">₱${flt(order.grand_total).toFixed(2)}</span>
+							</div>
+							<div class="d-flex justify-content-between align-items-center mt-1">
+								<span class="order-customer text-muted" style="font-size: 10px;">${customer}</span>
+								<span class="text-muted" style="font-size: 10px;">${posted_on}</span>
+							</div>
+							<div class="d-flex justify-content-between align-items-center mt-1">
+								<span class="text-muted" style="font-size: 10px;">${payment_status}</span>
+								<span class="d-flex align-items-center gap-2">
+									${order.is_return ? `<span class="badge badge-warning">${__("Return")}</span>` : ""}
+									<button type="button" class="btn btn-xs btn-default recent-reprint-btn" data-doctype="${invoice_doctype}" data-pos-name="${escaped_pos_invoice_name}">
+										<i class="fa fa-print"></i> ${__("Reprint")}
+									</button>
+								</span>
+							</div>
+						</button>
+					`;
+				})
+				.join("");
+			this.$recent_orders_list.html(html);
+			this.$recent_orders_list
+				.find(".recent-transaction-item")
+				.off("click")
+				.on("click", (e) => {
+					this.show_transaction_menu({
+						doctype: $(e.currentTarget).attr("data-doctype"),
+						pos_invoice_name: $(e.currentTarget).attr("data-pos-name"),
+					});
+				});
+			this.$recent_orders_list
+				.find(".recent-reprint-btn")
+				.off("click")
+				.on("click", (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					this.reprint_receipt({
+						doctype: $(e.currentTarget).attr("data-doctype"),
+						pos_invoice_name: $(e.currentTarget).attr("data-pos-name"),
+					});
+				});
+		}
+
+		show_transaction_menu(transaction) {
+			const pos_invoice_name =
+				typeof transaction === "string" ? transaction : transaction && transaction.pos_invoice_name;
+			if (!pos_invoice_name) return;
+
+			let d = new frappe.ui.Dialog({
+				title: __("Transaction {0}", [pos_invoice_name]),
+				fields: [
+					{
+						fieldtype: "HTML",
+						fieldname: "transaction_actions",
+						options: `
+							<div class="transaction-action-list">
+								<button type="button" class="btn btn-default btn-block text-left" data-action="reprint">
+									<i class="fa fa-print mr-2"></i>${__("Reprint Receipt")}
+								</button>
+								<button type="button" class="btn btn-default btn-block text-left" data-action="view">
+									<i class="fa fa-file-text-o mr-2"></i>${__("View Invoice")}
+								</button>
+							</div>
+						`,
+					},
+				],
 			});
-			d.$wrapper.find('[data-action="payment"]').on("click", () => {
-				d.hide();
-				this.receive_payment(invoice_name);
+
+			d.on_page_show = () => {
+				d.$wrapper.find('[data-action="reprint"]').on("click", () => {
+					d.hide();
+					this.reprint_receipt({ doctype: "POS Invoice", pos_invoice_name: pos_invoice_name });
+				});
+				d.$wrapper.find('[data-action="view"]').on("click", () => {
+					d.hide();
+					frappe.set_route("Form", "POS Invoice", pos_invoice_name);
+				});
+			};
+
+			d.show();
+		}
+
+		reprint_receipt(transaction) {
+			const pos_invoice_name =
+				typeof transaction === "string" ? transaction : transaction && transaction.pos_invoice_name;
+			if (!pos_invoice_name) return;
+
+			const params = new URLSearchParams({
+				doctype: "POS Invoice",
+				name: pos_invoice_name,
+				trigger_print: 1,
 			});
-			d.$wrapper.find('[data-action="view"]').on("click", () => {
-				d.hide();
-				this.view_past_order(invoice_name);
+			window.open(`/printview?${params.toString()}`, "_blank");
+		}
+
+		return_sale(invoice_name) {
+			if (!invoice_name) return;
+
+			frappe.msgprint({
+				title: __("Not Available"),
+				indicator: "orange",
+				message: __("Return Sale is not available from POS Invoice recent transactions yet."),
 			});
-		};
+		}
 
-		d.show();
-	}
+		receive_payment(invoice_name) {
+			if (!invoice_name) return;
 
-	reprint_receipt(invoice_name) {
-		if (!invoice_name) return;
-
-		const params = new URLSearchParams({
-			doctype: "Sales Invoice",
-			name: invoice_name,
-			trigger_print: 1,
-		});
-		window.open(`/printview?${params.toString()}`, "_blank");
-	}
-
-	return_sale(invoice_name) {
-		if (!invoice_name) return;
-
-		frappe.call({
-			method: "erpnext.accounts.doctype.sales_invoice.sales_invoice.make_sales_return",
-			args: { source_name: invoice_name },
-			freeze: true,
-			callback: (r) => {
-				if (!r.message) return;
-				frappe.model.sync(r.message);
-				frappe.set_route("Form", r.message.doctype, r.message.name);
-			},
-		});
-	}
-
-	receive_payment(invoice_name) {
-		if (!invoice_name) return;
-
-		frappe.call({
-			method: "erpnext.accounts.doctype.payment_entry.payment_entry.get_payment_entry",
-			args: { dt: "Sales Invoice", dn: invoice_name },
-			freeze: true,
-			callback: (r) => {
-				if (!r.message) return;
-				frappe.model.sync(r.message);
-				frappe.set_route("Form", r.message.doctype, r.message.name);
-			},
-		});
-	}
+			frappe.msgprint({
+				title: __("Not Available"),
+				indicator: "orange",
+				message: __("Receive Payment is not available from POS Invoice recent transactions yet."),
+			});
+		}
 
 	process_payment() {
 		let me = this;
@@ -1890,7 +1895,7 @@ class MiniMartPOS {
 	}
 
 	view_past_order(invoice_name) {
-		if (invoice_name) frappe.set_route("Form", "Sales Invoice", invoice_name);
+		if (invoice_name) frappe.set_route("Form", "POS Invoice", invoice_name);
 	}
 	close_shift() {
 		frappe.confirm(__("Close shift?"), () => {

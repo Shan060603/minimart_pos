@@ -1,7 +1,9 @@
 import json
 
 import frappe
-from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import make_closing_entry_from_opening
+from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import (
+	make_closing_entry_from_opening,
+)
 from erpnext.accounts.doctype.pos_invoice.pos_invoice import get_stock_availability
 from erpnext.selling.doctype.customer.customer import get_credit_limit, get_customer_outstanding
 from erpnext.stock.stock_ledger import NegativeStockError
@@ -1024,7 +1026,7 @@ def create_invoice(
 def void_invoice(invoice_name):
 	"""Submitted invoices cannot be voided from Mart POS."""
 	frappe.throw(
-		_("Checkout has already happened for Sales Invoice {0}. Use Return Sale instead.").format(
+		_("Checkout has already happened for POS Invoice {0}. Use Return Sale instead.").format(
 			frappe.bold(invoice_name)
 		),
 		title=_("Void Not Allowed"),
@@ -1118,24 +1120,124 @@ def delete_all_held_sales():
 
 
 @frappe.whitelist()
-def get_recent_invoices(opening_entry):
-
-	return frappe.db.get_list(
-		"Sales Invoice",
-		filters={"owner": frappe.session.user, "docstatus": 1},
-		fields=[
+def get_recent_invoices(opening_entry=None):
+	if not opening_entry or str(opening_entry).strip().strip("\"'[]").lower() in ("", "none", "null"):
+		profile = get_assigned_pos_profile()
+		opening_entry = frappe.db.get_value(
+			"POS Opening Entry",
+			{
+				"pos_profile": profile.name,
+				"user": frappe.session.user,
+				"status": "Open",
+				"docstatus": 1,
+			},
 			"name",
-			"customer",
-			"grand_total",
-			"outstanding_amount",
-			"creation",
-			"status",
-			"is_return",
-			"return_against",
-		],
-		order_by="creation desc",
-		limit=20,
+		)
+
+	if not opening_entry:
+		return []
+
+	profile = get_assigned_pos_profile()
+	opening_doc = frappe.get_doc("POS Opening Entry", opening_entry)
+
+	if (
+		opening_doc.status != "Open"
+		or opening_doc.docstatus != 1
+		or opening_doc.pos_profile != profile.name
+	):
+		return []
+
+	period_end_date = now_datetime()
+	filters = {
+		"start": opening_doc.period_start_date,
+		"end": period_end_date,
+		"pos_profile": opening_doc.pos_profile,
+	}
+	owner_condition = ""
+	if opening_doc.user == frappe.session.user:
+		owner_condition = "AND owner = %(user)s"
+		filters["user"] = opening_doc.user
+
+	invoices = frappe.db.sql(
+		f"""
+		SELECT
+			name,
+			customer,
+			grand_total,
+			paid_amount,
+			outstanding_amount,
+			status,
+			posting_date,
+			posting_time,
+			is_return,
+			return_against,
+			owner,
+			pos_profile,
+			docstatus,
+			IFNULL(consolidated_invoice, '') AS consolidated_invoice
+		FROM `tabPOS Invoice`
+		WHERE docstatus = 1
+			AND pos_profile = %(pos_profile)s
+			AND IFNULL(consolidated_invoice, '') = ''
+			AND TIMESTAMP(posting_date, posting_time) BETWEEN %(start)s AND %(end)s
+			{owner_condition}
+		ORDER BY TIMESTAMP(posting_date, posting_time) DESC, creation DESC
+		LIMIT 20
+		""",
+		filters,
+		as_dict=1,
 	)
+
+	frappe.logger("minimart_pos").debug(
+		"Recent POS Invoice filters: "
+		f"opening_entry={opening_doc.name}, "
+		f"opening_user={opening_doc.user}, "
+		f"session_user={frappe.session.user}, "
+		f"pos_profile={opening_doc.pos_profile}, "
+		f"period_start_date={opening_doc.period_start_date}, "
+		f"period_end_date={period_end_date}, "
+		f"matched={[d.name for d in invoices]}"
+	)
+
+	return [
+		{
+			"doctype": "POS Invoice",
+			"name": d.name,
+			"pos_invoice_name": d.name,
+			"display_id": "#{}".format(d.name.split("-")[-1]),
+			"customer": d.customer,
+			"grand_total": d.grand_total,
+			"paid_amount": d.paid_amount,
+			"outstanding_amount": d.outstanding_amount,
+			"status": d.status,
+			"posting_date": d.posting_date,
+			"posting_time": d.posting_time,
+			"is_return": d.is_return,
+			"return_against": d.return_against,
+		}
+		for d in invoices[:20]
+	]
+
+
+@frappe.whitelist()
+def get_recent_orders(opening_entry=None):
+	if not opening_entry or str(opening_entry).strip().strip("\"'[]").lower() in ("", "none", "null"):
+		profile = get_assigned_pos_profile()
+		opening_entry = frappe.db.get_value(
+			"POS Opening Entry",
+			{
+				"pos_profile": profile.name,
+				"user": frappe.session.user,
+				"status": "Open",
+				"docstatus": 1,
+			},
+			"name",
+		)
+
+	if not opening_entry:
+		return []
+
+	return get_recent_invoices(opening_entry)
 
 
 
