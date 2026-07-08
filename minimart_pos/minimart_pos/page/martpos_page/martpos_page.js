@@ -10,7 +10,7 @@ frappe.pages["martpos_page"].on_page_load = function (wrapper) {
 		method: "minimart_pos.api.check_pos_opening",
 		callback: function (r) {
 			if (!r.message.opening_entry) {
-				show_opening_dialog(r.message.pos_profile);
+				show_opening_dialog(r.message);
 			} else {
 				render_pos_ui(page, r.message);
 			}
@@ -18,28 +18,72 @@ frappe.pages["martpos_page"].on_page_load = function (wrapper) {
 	});
 };
 
-function show_opening_dialog(profile) {
+function show_opening_dialog(shift_data) {
+	let profile = shift_data.pos_profile;
+	let d_fields = [];
+
+	d_fields.push(
+		{
+			label: __("Cashier"),
+			fieldname: "cashier",
+			fieldtype: "Data",
+			default: shift_data.cashier || "",
+			read_only: 1,
+		},
+		{
+			label: __("POS Profile"),
+			fieldname: "pos_profile",
+			fieldtype: "Data",
+			default: profile || "",
+			read_only: 1,
+		},
+		{
+			label: __("Company"),
+			fieldname: "company",
+			fieldtype: "Data",
+			default: shift_data.company || "",
+			read_only: 1,
+		},
+		{
+			label: __("Opening Date"),
+			fieldname: "opening_date",
+			fieldtype: "Date",
+			default: frappe.datetime.get_today(),
+			read_only: 1,
+		},
+	);
+
+	d_fields = d_fields.concat(
+		(shift_data.payment_methods || []).map((mop) => ({
+			label: __(mop),
+			fieldname: `mop_${mop}`,
+			fieldtype: "Currency",
+			default: 0.0,
+		})),
+	);
+
 	let d = new frappe.ui.Dialog({
 		title: __("Open POS Shift"),
-		fields: [
-			{
-				label: __("Opening Amount"),
-				fieldname: "amount",
-				fieldtype: "Currency",
-				default: 0,
-			},
-		],
-		primary_action_label: __("Start Shift"),
+		fields: d_fields,
+		primary_action_label: __("Open Shift"),
 		primary_action(values) {
+			let amounts = {};
+			(shift_data.payment_methods || []).forEach((mop) => {
+				let key = `mop_${mop}`;
+				amounts[mop] = flt(values[key] || 0);
+			});
+
 			frappe.call({
 				method: "minimart_pos.api.create_opening_entry",
-				args: { pos_profile: profile, amount: values.amount },
-				callback: (r) => {
+				args: { pos_profile: profile, amounts: amounts },
+				freeze: true,
+				callback: () => {
 					d.hide();
 					location.reload();
 				},
 			});
 		},
+		primary_action_disabled: false,
 	});
 	d.show();
 }
@@ -50,9 +94,10 @@ function render_pos_ui(page, shift_data) {
 	window.pos_instance.init();
 
 	page.set_primary_action(__("Open Drawer"), () => window.pos_instance.trigger_cash_drawer());
+
 	page.add_inner_button(__("Hold Sale"), () => window.pos_instance.hold_sale());
 	page.add_inner_button(__("Held Sales"), () => window.pos_instance.show_held_sales());
-	page.add_menu_item(__("Close Shift"), () => window.pos_instance.close_shift());
+	page.add_inner_button(__("Close Shift"), () => window.pos_instance.close_shift());
 }
 
 class MiniMartPOS {
@@ -1483,11 +1528,8 @@ class MiniMartPOS {
                                 </div>
 
                                 <label class="small font-weight-bold">PAYMENT METHOD</label>
-                                <div class="d-flex gap-2 mb-3">
-                                    <button class="btn btn-primary flex-grow-1 mop-btn active" data-mop="Cash">CASH</button>
-                                    <button class="btn btn-outline-dark flex-grow-1 mop-btn" data-mop="G-Cash">G-CASH</button>
-                                    <button class="btn btn-outline-dark flex-grow-1 mop-btn" data-mop="Utang">UTANG</button>
-                                </div>
+                                <div class="d-flex gap-2 mb-3" id="payment-methods-container"></div>
+
 
                                 <div id="utang-credit-status" class="small mb-3" style="display:none;"></div>
 
@@ -1523,6 +1565,7 @@ class MiniMartPOS {
 				let received =
 					selected_mop === "Utang" ? 0 : flt($wrapper.find("#numpad-input").val());
 				let customer = me.customer_control.get_value();
+
 				let has_outstanding =
 					selected_mop === "Utang" || received < me.current_payment_total;
 				let payment_due_date = $wrapper.find("#payment-due-date").val();
@@ -1560,6 +1603,43 @@ class MiniMartPOS {
 		d.on_page_show = () => {
 			// remember wrapper for scoped operations
 			me.$payment_wrapper = d.$wrapper;
+
+			// Render payment methods from active POS Profile (shift_data.payment_methods)
+			// so the single source of truth is ERPNext POS Profile.
+			const $methodsContainer = me.$payment_wrapper.find("#payment-methods-container");
+			const paymentMethods =
+				me.shift_data && me.shift_data.payment_methods
+					? me.shift_data.payment_methods
+					: [];
+
+			$methodsContainer.empty();
+			if (paymentMethods.length) {
+				const buttonsHtml = paymentMethods
+					.map((mop, idx) => {
+						const isActive = idx === 0;
+						return `
+							<button
+								class="btn flex-grow-1 mop-btn ${isActive ? "btn-primary active" : "btn-outline-dark"}"
+								data-mop="${mop}">
+									${mop}
+								</button>
+						`;
+					})
+					.join("");
+
+				$methodsContainer.html(buttonsHtml);
+
+				// Ensure exactly one active method.
+				const $first = me.$payment_wrapper.find(".mop-btn").first();
+				if ($first.length && !$first.hasClass("active")) {
+					me.$payment_wrapper
+						.find(".mop-btn.active")
+						.removeClass("active btn-primary")
+						.addClass("btn-outline-dark");
+					$first.addClass("active btn-primary").removeClass("btn-outline-dark");
+				}
+			}
+
 			me.attach_payment_listeners(original_total);
 			// Slight delay for focus to ensure DOM is ready
 			setTimeout(() => {
@@ -1817,7 +1897,14 @@ class MiniMartPOS {
 			frappe.call({
 				method: "minimart_pos.api.close_pos_shift",
 				args: { opening_entry: this.shift_data.opening_entry },
-				callback: () => location.reload(),
+				callback: (r) => {
+					const closing_entry_name = r && r.message ? r.message : null;
+					if (closing_entry_name) {
+						frappe.set_route("Form", "POS Closing Entry", closing_entry_name);
+					} else {
+						location.reload();
+					}
+				},
 			});
 		});
 	}

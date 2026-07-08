@@ -303,6 +303,27 @@ def get_catalog_rows(profile, item_code=None, search_term=None, item_group=None,
 
 def validate_shift_stock(opening_entry):
 	"""Fail early with a clean message if closing the shift would create negative stock."""
+	# Reuse ERPNext POS invoice selection logic.
+	# ERPNext's POS closing helper uses `get_pos_invoices(...)` to determine the invoices
+	# that belong to the opening shift; we must do the same here.
+	opening_doc = frappe.get_doc("POS Opening Entry", opening_entry)
+
+	# ERPNext helper expects: start, end, pos_profile, user.
+	period_start_date = opening_doc.period_start_date
+
+	# ERPNext's make_closing_entry_from_opening() uses current datetime as period_end.
+	from frappe.utils import now_datetime
+	period_end_date = now_datetime()
+
+	pos_profile = opening_doc.pos_profile
+	user = opening_doc.user
+
+	# Imported from ERPNext's POS closing helper module.
+	from erpnext.accounts.doctype.pos_closing_entry.pos_closing_entry import get_pos_invoices
+	pos_invoices = get_pos_invoices(period_start_date, period_end_date, pos_profile, user)
+
+
+	# Compute sold quantities from returned invoices.
 	sold_rows = frappe.db.sql(
 		"""
 		SELECT
@@ -310,16 +331,16 @@ def validate_shift_stock(opening_entry):
 			item.warehouse,
 			SUM(item.stock_qty) AS sold_qty
 		FROM `tabPOS Invoice Item` item
-		INNER JOIN `tabPOS Invoice` invoice ON invoice.name = item.parent
-		WHERE invoice.pos_opening_entry = %s
-			AND invoice.docstatus = 1
+		WHERE item.parent IN %(invoice_names)s
+			AND item.docstatus = 1
 			AND IFNULL(item.warehouse, '') != ''
 		GROUP BY item.item_code, item.warehouse
 		HAVING sold_qty > 0
 		""",
-		(opening_entry,),
+		{"invoice_names": tuple([inv.name if hasattr(inv, "name") else inv for inv in pos_invoices] )},
 		as_dict=1,
 	)
+
 
 	required_stock = {}
 	bundle_cache = {}
@@ -363,11 +384,24 @@ def check_pos_opening():
 	profile = get_assigned_pos_profile()
 	opening_entry = frappe.db.get_value(
 		"POS Opening Entry",
-		{"pos_profile": profile.name, "user": frappe.session.user, "status": "Open", "docstatus": 1},
+		{
+			"pos_profile": profile.name,
+			"user": frappe.session.user,
+			"status": "Open",
+			"docstatus": 1,
+		},
 		"name",
 	)
 
 	payment_methods = [p.mode_of_payment for p in profile.payments]
+
+	opening_doc = frappe.get_doc("POS Opening Entry", opening_entry) if opening_entry else None
+	opening_time = None
+	cashier = None
+	if opening_doc:
+		# Use POS Opening Entry's own timestamp fields.
+		cashier = opening_doc.user
+		opening_time = opening_doc.get("period_start_date") or opening_doc.get("posting_date") or opening_doc.get("created_on")
 
 	return {
 		"opening_entry": opening_entry,
@@ -376,24 +410,41 @@ def check_pos_opening():
 		"customer": profile.customer,
 		"payment_methods": payment_methods,
 		"warehouse": profile.warehouse,
+		"cashier": cashier,
+		"opening_time": opening_time,
 	}
 
 
+
 @frappe.whitelist()
-def create_opening_entry(pos_profile, amount=0):
-	"""Creates and submits a new POS Opening Entry."""
+def create_opening_entry(pos_profile, amounts=None):
+	"""Creates and submits a new POS Opening Entry.
+
+	amounts: dict of mode_of_payment -> opening_amount. Missing modes default to 0.
+	"""
 	doc = frappe.new_doc("POS Opening Entry")
+
 	doc.pos_profile = pos_profile
 	doc.user = frappe.session.user
 	doc.company = frappe.db.get_value("POS Profile", pos_profile, "company")
 	doc.period_start_date = now_datetime()
 
 	profile_doc = frappe.get_doc("POS Profile", pos_profile)
+	# Create one balance detail row per configured payment method.
 	if profile_doc.payments:
-		doc.append(
-			"balance_details",
-			{"mode_of_payment": profile_doc.payments[0].mode_of_payment, "opening_amount": flt(amount)},
-		)
+		if isinstance(amounts, str):
+			amounts = json.loads(amounts or "{}")
+		amounts = amounts or {}
+		for row in profile_doc.payments:
+			doc.append(
+				"balance_details",
+				{
+					"mode_of_payment": row.mode_of_payment,
+					"opening_amount": flt(amounts.get(row.mode_of_payment, 0.0)),
+				},
+			)
+
+
 
 	doc.insert()
 	doc.submit()
@@ -708,6 +759,104 @@ def validate_utang_credit(customer, company, amount):
 	return details
 
 
+def reconcile_pos_invoice_payments(invoice, mode_of_payment, received_amount):
+	"""Mirror ERPNext POS' payment totals before server-side submit."""
+	received_amount = flt(received_amount)
+	selected_payment_found = mode_of_payment == "Utang"
+
+	for payment in invoice.get("payments") or []:
+		if payment.mode_of_payment == mode_of_payment:
+			payment.amount = received_amount
+			selected_payment_found = True
+		else:
+			payment.amount = 0
+
+	if not selected_payment_found:
+		frappe.throw(
+			_("Mode of Payment {0} is not configured in POS Profile {1}.").format(
+				frappe.bold(mode_of_payment), frappe.bold(invoice.pos_profile)
+			)
+		)
+
+	invoice.set_paid_amount()
+
+	rounded_total = getattr(invoice, "rounded_total", None)
+	raw_grand_total = getattr(invoice, "grand_total", None)
+	base_rounded_total = getattr(invoice, "base_rounded_total", None)
+	raw_base_grand_total = getattr(invoice, "base_grand_total", None)
+	paid_amount = flt(getattr(invoice, "paid_amount", 0))
+	base_paid_amount = flt(getattr(invoice, "base_paid_amount", 0))
+	total_advance = flt(getattr(invoice, "total_advance", 0))
+	write_off_amount = flt(getattr(invoice, "write_off_amount", 0))
+	base_write_off_amount = flt(getattr(invoice, "base_write_off_amount", 0))
+	conversion_rate = flt(getattr(invoice, "conversion_rate", 0))
+	change_amount = flt(getattr(invoice, "change_amount", 0))
+	grand_total = flt(rounded_total or raw_grand_total)
+	base_grand_total = flt(base_rounded_total or raw_base_grand_total)
+
+	frappe.logger("minimart_pos").debug(
+		"POS invoice payment reconciliation values: "
+		f"rounded_total={repr(rounded_total)}, "
+		f"grand_total={repr(raw_grand_total)}, "
+		f"base_rounded_total={repr(base_rounded_total)}, "
+		f"base_grand_total={repr(raw_base_grand_total)}, "
+		f"paid_amount={repr(getattr(invoice, 'paid_amount', None))}, "
+		f"base_paid_amount={repr(getattr(invoice, 'base_paid_amount', None))}, "
+		f"total_advance={repr(getattr(invoice, 'total_advance', None))}, "
+		f"write_off_amount={repr(getattr(invoice, 'write_off_amount', None))}, "
+		f"base_write_off_amount={repr(getattr(invoice, 'base_write_off_amount', None))}, "
+		f"conversion_rate={repr(getattr(invoice, 'conversion_rate', None))}, "
+		f"change_amount={repr(getattr(invoice, 'change_amount', None))}"
+	)
+
+	has_cash_payment = any(payment.type == "Cash" for payment in invoice.get("payments") or [])
+
+	invoice.change_amount = 0
+	invoice.base_change_amount = 0
+	if paid_amount > grand_total and not invoice.is_return and has_cash_payment:
+		invoice.change_amount = flt(
+			paid_amount - grand_total, invoice.precision("change_amount")
+		)
+		invoice.base_change_amount = flt(
+			base_paid_amount - base_grand_total, invoice.precision("base_change_amount")
+		)
+		change_amount = flt(invoice.change_amount)
+
+	if invoice.party_account_currency == invoice.currency:
+		total_amount_to_pay = flt(
+			grand_total
+			- total_advance
+			- write_off_amount,
+			invoice.precision("grand_total"),
+		)
+	else:
+		total_amount_to_pay = flt(
+			base_grand_total
+			- total_advance
+			- base_write_off_amount,
+			invoice.precision("base_grand_total"),
+		)
+		paid_amount = base_paid_amount
+
+	invoice.outstanding_amount = flt(
+		total_amount_to_pay - paid_amount + flt(change_amount * conversion_rate),
+		invoice.precision("outstanding_amount"),
+	)
+
+
+def set_normal_pos_sale_item_fields(item, warehouse):
+	"""Keep Mart POS item rows aligned with native normal POS sales."""
+	item.warehouse = warehouse
+	item.delivered_by_supplier = 0
+	item.target_warehouse = None
+	item.sales_order = None
+	item.so_detail = None
+	item.delivery_note = None
+	item.dn_detail = None
+	if item.meta.has_field("against_sales_order"):
+		item.against_sales_order = None
+
+
 @frappe.whitelist()
 def create_invoice(
 	cart,
@@ -718,8 +867,15 @@ def create_invoice(
 	held_sale_name=None,
 	payment_due_date=None,
 ):
-	"""Create a Sales Invoice using ERPNext's standard receivable and POS payment accounting."""
+	"""Create an ERPNext POS Invoice using ERPNext's POS payment structure.
+
+	Important: we must NOT manually create `payments` child rows.
+	ERPNext initializes `payments` from the POS Profile via POSInvoice.set_pos_fields()
+	(through update_multi_mode_option). Mart must then only set the `amount` on
+	the appropriate existing payment row.
+	"""
 	profile = get_assigned_pos_profile()
+
 
 	opening_entry = frappe.db.get_value(
 		"POS Opening Entry",
@@ -730,10 +886,31 @@ def create_invoice(
 	if not opening_entry:
 		frappe.throw(_("Please open a POS shift first."))
 
+
 	selected_customer = customer or profile.customer or "Guest"
-	invoice = frappe.new_doc("Sales Invoice")
+	invoice = frappe.new_doc("POS Invoice")
+
 
 	invoice.pos_profile = profile.name
+
+	# Link the invoice to the currently open POS Opening Entry for this user + POS Profile.
+	opening_entry_doc = frappe.get_all(
+		"POS Opening Entry",
+		filters={
+			"pos_profile": profile.name,
+			"user": frappe.session.user,
+			"status": "Open",
+			"docstatus": 1,
+		},
+		fields=["name"],
+		order_by="creation asc",
+		limit=1,
+	)
+	if not opening_entry_doc:
+		frappe.throw(_("Please open a POS shift first."))
+	invoice.pos_opening_entry = opening_entry_doc[0].name
+
+
 	invoice.customer = selected_customer
 	invoice.company = profile.company
 	invoice.update_stock = 0
@@ -772,13 +949,25 @@ def create_invoice(
 				"discount_percentage": discount_pct,
 				"discount_amount": discount_amount,
 				"warehouse": profile.warehouse,
+				"target_warehouse": None,
+				"delivered_by_supplier": 0,
+				"sales_order": None,
+				"so_detail": None,
+				"delivery_note": None,
+				"dn_detail": None,
 				"price_list_rate": item_price,
 				"allow_negative_stock": 1,
 			},
 		)
 
+	invoice.is_pos = 1
+
 	invoice.set_missing_values()
+	for item in invoice.get("items") or []:
+		set_normal_pos_sale_item_fields(item, profile.warehouse)
+
 	invoice.calculate_taxes_and_totals()
+
 
 	if total_payable is not None:
 		total_payable = flt(total_payable)
@@ -797,10 +986,9 @@ def create_invoice(
 		validate_utang_credit(selected_customer, profile.company, total_to_pay)
 		received = 0
 
-	change = received - total_to_pay if received > total_to_pay else 0
-	outstanding_amount = max(total_to_pay - received, 0)
+	has_deferred_payment = received < total_to_pay
 
-	if outstanding_amount:
+	if has_deferred_payment:
 		if not payment_due_date:
 			frappe.throw(_("Payment Due Date is required when the invoice has an outstanding balance."))
 
@@ -808,28 +996,19 @@ def create_invoice(
 		if invoice.due_date < invoice.posting_date:
 			frappe.throw(_("Payment Due Date cannot be before the invoice posting date."))
 
-	payment_account = frappe.db.get_value(
-		"Mode of Payment Account", {"parent": mode_of_payment, "company": profile.company}, "default_account"
-	)
+	# ERPNext POS Invoice will set payment rows (per POS Profile) and
+	# expects to update them based on `amount` for the selected Mode of Payment.
+	# Mart must NOT manually set payment row structure; only set the relevant
+	# row's amount (Cash/GCash/etc), leaving other rows at 0.
 
-	if received:
-		if not payment_account:
-			frappe.throw(
-				_("No default account found for Mode of Payment {0} and Company {1}.").format(
-					frappe.bold(mode_of_payment), frappe.bold(profile.company)
-				)
-			)
-
-		invoice.is_pos = 1
-		invoice.cash_bank_account = payment_account
-		invoice.account_for_change_amount = profile.account_for_change_amount
-		invoice.change_amount = change
-		invoice.append(
-			"payments",
-			{"mode_of_payment": mode_of_payment, "account": payment_account, "amount": received},
-		)
+	invoice.is_pos = 1
+	invoice.account_for_change_amount = profile.account_for_change_amount
+	reconcile_pos_invoice_payments(invoice, mode_of_payment, received)
 
 	invoice.insert()
+
+	reconcile_pos_invoice_payments(invoice, mode_of_payment, received)
+
 	invoice.submit()
 
 	mark_held_sale_completed(held_sale_name, invoice.name)
@@ -967,22 +1146,26 @@ def close_pos_shift(opening_entry):
 	if opening_doc.status != "Open":
 		frappe.throw(_("Shift is already closed."))
 
-	invoices = frappe.get_all(
-		"POS Invoice",
-		filters={"pos_opening_entry": opening_entry, "docstatus": 1},
-		fields=["name", "grand_total", "net_total", "total_qty", "posting_date"],
-	)
-
-	if not invoices:
-		frappe.throw(_("No submitted invoices found for this shift."))
-
+	# Use ERPNext POS closing helper to select POS invoices for this shift.
+	# No custom POS Invoice filtering by (non-existent) custom linkage fields.
 	validate_shift_stock(opening_entry)
 
+
+	# ERPNext helper builds the closing entry based on the opening shift,
+	# and internally links POS invoices to this opening (no custom POS invoice fields here).
 	closing_doc = make_closing_entry_from_opening(opening_doc)
+
 	closing_doc.period_end_date = now_datetime()
+
+	# Initialize payment reconciliation rows so Closing Amount defaults to Expected Amount,
+	# matching ERPNext's standard POS closing entry draft behavior.
+	# (The user will still review/edit before submitting.)
+	if getattr(closing_doc, "payment_reconciliation", None):
+		for row in closing_doc.payment_reconciliation:
+			if row.expected_amount is not None:
+				row.closing_amount = row.expected_amount
+
 	closing_doc.insert()
-	closing_doc.submit()
-	frappe.db.set_value(
-		"POS Opening Entry", opening_entry, {"status": "Closed", "pos_closing_entry": closing_doc.name}
-	)
+	# Do NOT manually close the POS Opening Entry here.
+	# ERPNext will automatically close the opening entry during POS Closing Entry submission.
 	return closing_doc.name
