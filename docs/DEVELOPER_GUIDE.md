@@ -173,7 +173,7 @@ There are no custom reports or print formats in the inspected app. Receipt print
 | `apps/minimart_pos/minimart_pos/minimart_pos/page/` | Frappe Desk Page module. | Stores custom page code. | `martpos_page/`. | Page UI work. | Checkout and recent transaction action mapping. |
 | `apps/minimart_pos/minimart_pos/minimart_pos/page/martpos_page/` | Mart POS page implementation. | Defines page metadata, template, styling, and JavaScript controller. | `.js`, `.html`, `.css`, `.json`. | UI layout and display behavior. | Payment dialog, route targets, reprint, closing, held sale actions. |
 | `apps/minimart_pos/minimart_pos/minimart_pos/doctype/` | Custom DocType module. | Holds custom data models. | `mart_pos_held_sale/`. | Add future app DocTypes. | Existing schema changes need migration awareness. |
-| `apps/minimart_pos/minimart_pos/minimart_pos/doctype/mart_pos_held_sale/` | Held Sale DocType. | Stores suspended carts. | JSON schema and Python controller. | Add fields for held-sale-only needs. | `completed_invoice` currently points to Sales Invoice historically. |
+| `apps/minimart_pos/minimart_pos/minimart_pos/doctype/mart_pos_held_sale/` | Held Sale DocType. | Stores suspended carts. | JSON schema and Python controller. | Add fields for held-sale-only needs. | `completed_invoice` links to the completed POS Invoice. |
 
 ### 2.2 File Responsibilities
 
@@ -187,7 +187,7 @@ There are no custom reports or print formats in the inspected app. Receipt print
 | `martpos_page.html` | Page template. | `frappe.render_template("martpos_page")`. | DOM IDs used by JS. | Frappe template rendering. | None directly. | Medium. |
 | `martpos_page.css` | UI styling. | Desk page asset loader. | Browser CSS. | CSS/Bootstrap classes. | None directly. | Low to medium. |
 | `martpos_page.json` | Frappe Page metadata. | Frappe Desk route loader. | Page JS/template. | Frappe Page DocType. | Page role permissions. | Medium. |
-| `mart_pos_held_sale.json` | Held Sale schema. | Frappe DocType system. | Database table generation. | Frappe ORM. | Customer, User, Sales Invoice link field. | Medium. |
+| `mart_pos_held_sale.json` | Held Sale schema. | Frappe DocType system. | Database table generation. | Frappe ORM. | Customer, User, POS Invoice link field. | Medium. |
 | `mart_pos_held_sale.py` | Held Sale DocType controller. | Frappe document lifecycle. | Currently minimal. | Frappe model controller. | Mart POS Held Sale. | Low currently. |
 
 **Key Takeaways**
@@ -458,7 +458,7 @@ Purpose: Marks a held sale as completed after checkout.
 
 DocTypes used: `Mart POS Held Sale`.
 
-Important note: The held sale schema currently has `completed_invoice` linked to `Sales Invoice`. Since Mart POS now checks out as `POS Invoice`, this field name/type is historical and should be handled carefully if future UI starts displaying it.
+Important note: The held sale schema has `completed_invoice` linked to `POS Invoice`, because Mart POS checkout creates and submits ERPNext POS Invoice records.
 
 #### `delete_held_sales(names)` and `delete_all_held_sales()`
 

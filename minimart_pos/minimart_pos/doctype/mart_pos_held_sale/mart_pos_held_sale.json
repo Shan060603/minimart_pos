@@ -84,7 +84,7 @@
    "fieldname": "completed_invoice",
    "fieldtype": "Link",
    "label": "Completed Invoice",
-   "options": "Sales Invoice",
+   "options": "POS Invoice",
    "read_only": 1
   }
  ],
