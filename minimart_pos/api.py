@@ -111,6 +111,112 @@ def get_available_qty(item_code, warehouse):
 	return flt(availability)
 
 
+def resolve_item_code(item_code_or_barcode):
+	item_code_or_barcode = str(item_code_or_barcode or "").strip()
+	if not item_code_or_barcode:
+		return None
+
+	if frappe.db.exists("Item", item_code_or_barcode):
+		return item_code_or_barcode
+
+	return frappe.db.get_value("Item Barcode", {"barcode": item_code_or_barcode}, "parent")
+
+
+def get_item_stock_qty(item_doc, qty, uom=None):
+	uom = uom or item_doc.stock_uom
+	conversion_factor = 1
+	if uom != item_doc.stock_uom:
+		for row in item_doc.uoms:
+			if row.uom == uom:
+				conversion_factor = flt(row.conversion_factor) or 1
+				break
+
+	return flt(qty) * conversion_factor
+
+
+def add_required_stock(required_stock, item_code, qty):
+	if not item_code or flt(qty) <= 0:
+		return
+	required_stock[item_code] = required_stock.get(item_code, 0) + flt(qty)
+
+
+@frappe.whitelist()
+def validate_cart_stock(cart):
+	"""Validate Mart POS cart stock from the server-side POS Profile warehouse.
+
+	Product-card quantities are display-only. Checkout validation uses ERPNext's
+	POS stock availability helper so barcode/search items, filtered cards, paged
+	cards, and Product Bundle components do not depend on the current DOM.
+	"""
+	profile = get_assigned_pos_profile()
+	warehouse = profile.warehouse
+	items = parse_cart_data(cart)
+	required_stock = {}
+	item_details = {}
+
+	for row in items:
+		raw_item_code = row.get("item_code") or row.get("barcode")
+		item_code = resolve_item_code(raw_item_code)
+		if not item_code:
+			missing_item_code = str(raw_item_code or "").strip() or _("Unknown Item")
+			add_required_stock(required_stock, missing_item_code, row.get("qty"))
+			item_details[missing_item_code] = {
+				"item_name": missing_item_code,
+				"stock_uom": row.get("uom"),
+				"missing": True,
+			}
+			continue
+
+		item_doc = frappe.get_doc("Item", item_code)
+		stock_qty = get_item_stock_qty(item_doc, row.get("qty"), row.get("uom"))
+		if stock_qty <= 0:
+			continue
+
+		if is_active_product_bundle(item_code):
+			for component in get_bundle_components(item_code):
+				component_code = component.get("item_code")
+				component_qty = stock_qty * flt(component.get("qty"))
+				add_required_stock(required_stock, component_code, component_qty)
+
+				if component_code and component_code not in item_details:
+					component_doc = frappe.get_doc("Item", component_code)
+					item_details[component_code] = {
+						"item_name": component_doc.item_name,
+						"stock_uom": component_doc.stock_uom,
+					}
+		elif item_doc.is_stock_item:
+			add_required_stock(required_stock, item_code, stock_qty)
+			item_details[item_code] = {
+				"item_name": item_doc.item_name,
+				"stock_uom": item_doc.stock_uom,
+			}
+
+	issues = []
+	for item_code, required_qty in required_stock.items():
+		details = item_details.get(item_code) or {}
+		if details.get("missing"):
+			available_qty = 0
+		else:
+			availability, is_stock_item, _ = get_stock_availability(item_code, warehouse)
+			available_qty = flt(availability) if is_stock_item else 0
+		if required_qty > available_qty:
+			issues.append(
+				{
+					"item_code": item_code,
+					"item_name": details.get("item_name") or item_code,
+					"available_qty": available_qty,
+					"required_qty": flt(required_qty),
+					"stock_uom": details.get("stock_uom"),
+				}
+			)
+
+	return {
+		"valid": not issues,
+		"warehouse": warehouse,
+		"issues": issues,
+	}
+
+
 def enrich_pos_item(row, warehouse):
 	row = dict(row)
 	row["bundle_components"] = get_bundle_components(row["item_code"], warehouse=warehouse)

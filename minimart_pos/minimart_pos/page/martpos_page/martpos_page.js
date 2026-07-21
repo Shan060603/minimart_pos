@@ -589,6 +589,8 @@ class MiniMartPOS {
 	}
 
 	get_base_stock_qty(item_code) {
+		// Product-card quantities are display-only. Checkout uses backend
+		// validation so hidden, filtered, paged, or barcode-only items still validate.
 		let $card = this.get_product_card(item_code);
 		return $card.length ? flt($card.attr("data-base-actual-qty")) : 0;
 	}
@@ -598,31 +600,55 @@ class MiniMartPOS {
 		return ($card.attr("data-item-name") || item_code).trim();
 	}
 
-	get_checkout_stock_issues() {
-		let tracked_codes = new Set();
+	get_checkout_cart_payload() {
+		return this.cart.map((i) => ({
+			item_code: i.item_code,
+			qty: i.qty,
+			uom: i.uom,
+			price: i.price,
+			discount_pct: i.discount_pct,
+		}));
+	}
 
-		this.cart.forEach((cart_item) => {
-			tracked_codes.add(cart_item.item_code);
-			(cart_item.bundle_components || []).forEach((component) =>
-				tracked_codes.add(component.item_code),
-			);
+	async get_checkout_stock_issues() {
+		let cart_payload = this.get_checkout_cart_payload();
+
+		return new Promise((resolve) => {
+			frappe.call({
+				method: "minimart_pos.api.validate_cart_stock",
+				args: {
+					cart: JSON.stringify(cart_payload),
+				},
+				freeze: true,
+				callback: (r) => {
+					resolve((r.message && r.message.issues) || []);
+				},
+			});
 		});
+	}
 
-		return Array.from(tracked_codes).reduce((issues, item_code) => {
-			let available_qty = this.get_base_stock_qty(item_code);
-			let required_qty = this.get_reserved_stock_qty(item_code);
+	show_checkout_stock_issues(stock_issues) {
+		if (!stock_issues.length) return false;
 
-			if (required_qty > available_qty) {
-				issues.push({
-					item_code,
-					item_name: this.get_product_name(item_code),
-					available_qty,
-					required_qty,
-				});
-			}
+		let issue_lines = stock_issues
+			.slice(0, 5)
+			.map(
+				(issue) =>
+					`${frappe.utils.escape_html(issue.item_name || issue.item_code)}: ${__("Available")} ${flt(issue.available_qty).toFixed(2)}, ${__("In Cart")} ${flt(issue.required_qty).toFixed(2)}`,
+			);
+		let more_count = stock_issues.length - issue_lines.length;
+		let more_text =
+			more_count > 0 ? `<br>${__("and {0} more item(s).", [more_count])}` : "";
 
-			return issues;
-		}, []);
+		frappe.msgprint({
+			title: __("Hold Sale Needed"),
+			indicator: "orange",
+			message: __(
+				"This cart cannot be checked out because some items do not have enough stock. Use Hold Sale instead.<br><br>{0}{1}",
+				[issue_lines.join("<br>"), more_text],
+			),
+		});
+		return true;
 	}
 
 	get_remaining_bundle_qty(bundle_components) {
@@ -1446,7 +1472,7 @@ class MiniMartPOS {
 			});
 		}
 
-	process_payment() {
+	async process_payment() {
 		let me = this;
 		const original_total = flt(this.$total_display.text());
 		this.current_payment_total = original_total;
@@ -1470,26 +1496,8 @@ class MiniMartPOS {
 			return;
 		}
 
-		let stock_issues = this.get_checkout_stock_issues();
-		if (stock_issues.length) {
-			let issue_lines = stock_issues
-				.slice(0, 5)
-				.map(
-					(issue) =>
-						`${frappe.utils.escape_html(issue.item_name)}: ${__("Available")} ${flt(issue.available_qty).toFixed(2)}, ${__("In Cart")} ${flt(issue.required_qty).toFixed(2)}`,
-				);
-			let more_count = stock_issues.length - issue_lines.length;
-			let more_text =
-				more_count > 0 ? `<br>${__("and {0} more item(s).", [more_count])}` : "";
-
-			frappe.msgprint({
-				title: __("Hold Sale Needed"),
-				indicator: "orange",
-				message: __(
-					"This cart cannot be checked out because some items do not have enough stock. Use Hold Sale instead.<br><br>{0}{1}",
-					[issue_lines.join("<br>"), more_text],
-				),
-			});
+		let stock_issues = await this.get_checkout_stock_issues();
+		if (this.show_checkout_stock_issues(stock_issues)) {
 			return;
 		}
 
@@ -1563,7 +1571,7 @@ class MiniMartPOS {
 				},
 			],
 			primary_action_label: __("Complete Sale"),
-			primary_action(values) {
+			async primary_action(values) {
 				// using scoped lookup inside wrapper ensures we target the correct dialog
 				const $wrapper = d.$wrapper;
 				let selected_mop = $wrapper.find(".mop-btn.active").attr("data-mop");
@@ -1590,6 +1598,11 @@ class MiniMartPOS {
 						indicator: "red",
 						message: __("Please set the payment due date before submitting."),
 					});
+					return;
+				}
+
+				let stock_issues = await me.get_checkout_stock_issues();
+				if (me.show_checkout_stock_issues(stock_issues)) {
 					return;
 				}
 
@@ -1667,13 +1680,7 @@ class MiniMartPOS {
 	}
 
 	submit_payment(dialog, selected_mop, received, customer, payment_due_date = null) {
-		let cart_payload = this.cart.map((i) => ({
-			item_code: i.item_code,
-			qty: i.qty,
-			uom: i.uom,
-			price: i.price,
-			discount_pct: i.discount_pct,
-		}));
+		let cart_payload = this.get_checkout_cart_payload();
 
 		frappe.call({
 			method: "minimart_pos.api.create_invoice",
